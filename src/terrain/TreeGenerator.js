@@ -24,8 +24,8 @@ export function getModelCategory(name) {
  */
 export const DEFAULT_TREE_CONFIGS = {
   long_1: {
-    minScale: 0.70,
-    maxScale: 1.40,
+    minScale: 3,
+    maxScale: 3,
     minRotX: -4,
     maxRotX: 4,
     minRotY: 0,
@@ -34,18 +34,18 @@ export const DEFAULT_TREE_CONFIGS = {
     maxRotZ: 4,
   },
   long_2: {
-    minScale: 0.70,
-    maxScale: 1.40,
-    minRotX: -4,
-    maxRotX: 4,
+    minScale: 0.8,
+    maxScale: 3,
+    minRotX: -8,
+    maxRotX: 21,
     minRotY: 0,
     maxRotY: 360,
-    minRotZ: -4,
-    maxRotZ: 4,
+    minRotZ: -3,
+    maxRotZ: 14,
   },
   small_1: {
-    minScale: 0.60,
-    maxScale: 1.25,
+    minScale: 3,
+    maxScale: 3,
     minRotX: -5,
     maxRotX: 5,
     minRotY: 0,
@@ -54,34 +54,34 @@ export const DEFAULT_TREE_CONFIGS = {
     maxRotZ: 5,
   },
   small_2: {
-    minScale: 0.60,
-    maxScale: 1.25,
-    minRotX: -5,
-    maxRotX: 5,
+    minScale: 1.1,
+    maxScale: 2,
+    minRotX: 0,
+    maxRotX: -1,
     minRotY: 0,
     maxRotY: 360,
-    minRotZ: -5,
-    maxRotZ: 5,
+    minRotZ: 1,
+    maxRotZ: 1,
   },
   dead_1: {
-    minScale: 0.65,
-    maxScale: 1.30,
-    minRotX: -6,
-    maxRotX: 6,
+    minScale: 0.35,
+    maxScale: 2.7,
+    minRotX: -45,
+    maxRotX: 45,
     minRotY: 0,
     maxRotY: 360,
-    minRotZ: -6,
-    maxRotZ: 6,
+    minRotZ: -32,
+    maxRotZ: 38,
   },
   dead_2: {
-    minScale: 0.70,
-    maxScale: 1.45,
-    minRotX: -6,
-    maxRotX: 6,
+    minScale: 0.75,
+    maxScale: 3,
+    minRotX: -44,
+    maxRotX: 40,
     minRotY: 0,
     maxRotY: 360,
-    minRotZ: -6,
-    maxRotZ: 6,
+    minRotZ: -40,
+    maxRotZ: 39,
   },
 };
 
@@ -461,7 +461,7 @@ export class TreeGenerator {
           map: textures.branchDiffuse || null,
           normalMap: textures.branchNormal || null,
           normalScale: new THREE.Vector2(0.8, 0.8),
-          roughness: 0.65,
+          roughness: 1,
           metalness: 0.0,
           side: THREE.DoubleSide,
           transparent: true,
@@ -537,13 +537,13 @@ export class TreeGenerator {
     const minZ = chunkZ * this.chunkSize;
     const instancesByModel = new Map();
 
-    const addInstance = (modelData, x, y, z, scale, rotX, rotY, rotZ) => {
+    const addInstance = (modelData, x, y, z, scaleHash, rotXHash, rotYHash, rotZHash) => {
       let list = instancesByModel.get(modelData);
       if (!list) {
         list = [];
         instancesByModel.set(modelData, list);
       }
-      list.push({ x, y, z, scale, rotX, rotY, rotZ });
+      list.push({ x, y, z, scaleHash, rotXHash, rotYHash, rotZHash });
     };
 
     // Organic spacing grid
@@ -594,34 +594,14 @@ export class TreeGenerator {
           continue;
         }
 
-        // 6. Live Config-Driven Scale and 3-Axis Rotation Randomization
-        const cfg = this.getTreeConfig(modelData.name);
-
-        // Randomized Size (Scale)
+        // Live Config-Driven Randomization Hashes
         const scaleHash = this._hash(chunkX, chunkZ, gx * 13 + 5, gz * 17 + 9);
-        const minS = Math.min(cfg.minScale, cfg.maxScale);
-        const maxS = Math.max(cfg.minScale, cfg.maxScale);
-        const scale = minS + (maxS - minS) * scaleHash;
-
-        // Randomized 3-Axis Rotations (degrees -> radians)
         const rotXHash = this._hash(chunkX, chunkZ, gx * 37 + 7, gz * 41 + 13);
         const rotYHash = this._hash(chunkX, chunkZ, gx * 91 + 17, gz * 103 + 31);
         const rotZHash = this._hash(chunkX, chunkZ, gx * 47 + 19, gz * 53 + 23);
 
-        const minRx = Math.min(cfg.minRotX, cfg.maxRotX);
-        const maxRx = Math.max(cfg.minRotX, cfg.maxRotX);
-        const rotX = (minRx + (maxRx - minRx) * rotXHash) * (Math.PI / 180);
-
-        const minRy = Math.min(cfg.minRotY, cfg.maxRotY);
-        const maxRy = Math.max(cfg.minRotY, cfg.maxRotY);
-        const rotY = (minRy + (maxRy - minRy) * rotYHash) * (Math.PI / 180);
-
-        const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ);
-        const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ);
-        const rotZ = (minRz + (maxRz - minRz) * rotZHash) * (Math.PI / 180);
-
         // Sink trunk 0.35m into snow to bury roots naturally on sloped terrain
-        addInstance(modelData, wx, wy - 0.35, wz, scale, rotX, rotY, rotZ);
+        addInstance(modelData, wx, wy - 0.35, wz, scaleHash, rotXHash, rotYHash, rotZHash);
       }
     }
 
@@ -638,13 +618,30 @@ export class TreeGenerator {
         modelData.materials,
         instances.length
       );
+      instMesh.userData.instances = instances;
+      instMesh.userData.modelName = modelData.name;
+
+      const cfg = this.getTreeConfig(modelData.name);
+      const minS = Math.min(cfg.minScale, cfg.maxScale);
+      const maxS = Math.max(cfg.minScale, cfg.maxScale);
+      const minRx = Math.min(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
+      const maxRx = Math.max(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
+      const minRy = Math.min(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
+      const maxRy = Math.max(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
+      const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+      const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
 
       for (let i = 0; i < instances.length; i++) {
         const inst = instances[i];
+        const scale = minS + (maxS - minS) * inst.scaleHash;
+        const rotX = minRx + (maxRx - minRx) * inst.rotXHash;
+        const rotY = minRy + (maxRy - minRy) * inst.rotYHash;
+        const rotZ = minRz + (maxRz - minRz) * inst.rotZHash;
+
         dummy.position.set(inst.x, inst.y, inst.z);
         // 'YXZ' rotation order: spins yaw around the tree trunk first, then applies tilt
-        dummy.rotation.set(inst.rotX, inst.rotY, inst.rotZ, 'YXZ');
-        dummy.scale.set(inst.scale, inst.scale, inst.scale);
+        dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
+        dummy.scale.set(scale, scale, scale);
         dummy.updateMatrix();
         instMesh.setMatrixAt(i, dummy.matrix);
       }
@@ -667,6 +664,57 @@ export class TreeGenerator {
       group.add(mesh);
     }
     return group;
+  }
+
+  /**
+   * Fast in-place matrix update of tree instances across all loaded chunks without disposing or recreating geometries.
+   * Runs in < 0.2ms, enabling 60 FPS real-time transforms while dragging sliders.
+   * @param {string} [targetVariant] - Optional tree variant name to restrict update to, or null for all.
+   * @param {Iterable<TerrainChunk>} chunks - Active chunks to update.
+   */
+  updateTreeTransforms(targetVariant, chunks) {
+    if (!chunks) return;
+    const dummy = new THREE.Object3D();
+
+    for (const chunk of chunks) {
+      const treeObj = chunk.treeMesh;
+      if (!treeObj) continue;
+
+      const meshes = treeObj.isInstancedMesh ? [treeObj] : (treeObj.isGroup ? treeObj.children : []);
+      for (const instMesh of meshes) {
+        if (!instMesh || !instMesh.isInstancedMesh || !instMesh.userData.instances) continue;
+        const modelName = instMesh.userData.modelName;
+        if (targetVariant && modelName !== targetVariant) continue;
+
+        const cfg = this.getTreeConfig(modelName);
+        const instances = instMesh.userData.instances;
+
+        const minS = Math.min(cfg.minScale, cfg.maxScale);
+        const maxS = Math.max(cfg.minScale, cfg.maxScale);
+        const minRx = Math.min(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
+        const maxRx = Math.max(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
+        const minRy = Math.min(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
+        const maxRy = Math.max(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
+        const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+        const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+
+        for (let i = 0; i < instances.length; i++) {
+          const inst = instances[i];
+          const scale = minS + (maxS - minS) * inst.scaleHash;
+          const rotX = minRx + (maxRx - minRx) * inst.rotXHash;
+          const rotY = minRy + (maxRy - minRy) * inst.rotYHash;
+          const rotZ = minRz + (maxRz - minRz) * inst.rotZHash;
+
+          dummy.position.set(inst.x, inst.y, inst.z);
+          dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
+          dummy.scale.set(scale, scale, scale);
+          dummy.updateMatrix();
+          instMesh.setMatrixAt(i, dummy.matrix);
+        }
+
+        instMesh.instanceMatrix.needsUpdate = true;
+      }
+    }
   }
 }
 

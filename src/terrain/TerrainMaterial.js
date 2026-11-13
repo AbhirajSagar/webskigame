@@ -1,6 +1,39 @@
 import * as THREE from 'three';
 
 /**
+ * Default Snow Material Config
+ * Completely customizable and exportable as JSON.
+ */
+export const DEFAULT_SNOW_CONFIG = {
+  // Chromatic Snow Palette
+  sunlitColor: '#fffef9',
+  shadowColor: '#bad6f7',
+  creviceColor: '#8cb0db',
+
+  // Slope & Wind Scour
+  slopeMin: 0.42,
+  slopeMax: 0.76,
+  peakScourStart: 72.0,
+  peakScourEnd: 125.0,
+  peakScourIntensity: 0.36,
+
+  // Surface & Roughness
+  snowNormalScale: 2.0,
+  snowRoughness: 0.80,
+
+  // Crystal Sparkles
+  sparkleScale: 2.85,
+  sparkleIntensity: 1.8,
+  sparkleDistance: 48.0,
+
+  // SSS & Glancing Sheen
+  sssIntensity: 0.38,
+  sssColor: '#ffe0bd',
+  sheenIntensity: 0.20,
+  sheenColor: '#d9ebff',
+};
+
+/**
  * TerrainMaterialFactory
  * Ultra-high-performance PBR alpine terrain shader with dynamic snow illumination and anti-tiled rock.
  *
@@ -45,6 +78,8 @@ export class TerrainMaterialFactory {
     this.snowNormalMap.wrapS = THREE.RepeatWrapping;
     this.snowNormalMap.wrapT = THREE.RepeatWrapping;
 
+    this.snowConfig = { ...DEFAULT_SNOW_CONFIG };
+
     // Dynamic Shader Uniforms
     this.uniforms = {
       uRockColorMap: { value: this.rockColorMap },
@@ -52,10 +87,28 @@ export class TerrainMaterialFactory {
       uRockRoughnessMap: { value: this.rockRoughnessMap },
       uRockAOMap: { value: this.rockAOMap },
       uSnowNormalMap: { value: this.snowNormalMap },
-      uSnowNormalScale: { value: 2.0 },
+      uSnowNormalScale: { value: this.snowConfig.snowNormalScale },
       uTime: { value: 0.0 },
       uCameraPosition: { value: new THREE.Vector3() },
       uSunDirection: { value: new THREE.Vector3(160, 220, 110).normalize() },
+
+      // Snow Dynamic Uniforms (Real-time tweakable)
+      uSunlitSnowColor: { value: new THREE.Color(this.snowConfig.sunlitColor) },
+      uShadowSnowColor: { value: new THREE.Color(this.snowConfig.shadowColor) },
+      uCreviceSnowColor: { value: new THREE.Color(this.snowConfig.creviceColor) },
+      uSnowSlopeMin: { value: this.snowConfig.slopeMin },
+      uSnowSlopeMax: { value: this.snowConfig.slopeMax },
+      uPeakScourStart: { value: this.snowConfig.peakScourStart },
+      uPeakScourEnd: { value: this.snowConfig.peakScourEnd },
+      uPeakScourIntensity: { value: this.snowConfig.peakScourIntensity },
+      uSnowRoughness: { value: this.snowConfig.snowRoughness },
+      uSparkleScale: { value: this.snowConfig.sparkleScale },
+      uSparkleIntensity: { value: this.snowConfig.sparkleIntensity },
+      uSparkleDistance: { value: this.snowConfig.sparkleDistance },
+      uSSSIntensity: { value: this.snowConfig.sssIntensity },
+      uSSSColor: { value: new THREE.Color(this.snowConfig.sssColor) },
+      uSheenIntensity: { value: this.snowConfig.sheenIntensity },
+      uSheenColor: { value: new THREE.Color(this.snowConfig.sheenColor) },
     };
 
     this.sharedMaterial = new THREE.MeshStandardMaterial({
@@ -76,6 +129,23 @@ export class TerrainMaterialFactory {
       shader.uniforms.uTime = this.uniforms.uTime;
       shader.uniforms.uCameraPosition = this.uniforms.uCameraPosition;
       shader.uniforms.uSunDirection = this.uniforms.uSunDirection;
+
+      shader.uniforms.uSunlitSnowColor = this.uniforms.uSunlitSnowColor;
+      shader.uniforms.uShadowSnowColor = this.uniforms.uShadowSnowColor;
+      shader.uniforms.uCreviceSnowColor = this.uniforms.uCreviceSnowColor;
+      shader.uniforms.uSnowSlopeMin = this.uniforms.uSnowSlopeMin;
+      shader.uniforms.uSnowSlopeMax = this.uniforms.uSnowSlopeMax;
+      shader.uniforms.uPeakScourStart = this.uniforms.uPeakScourStart;
+      shader.uniforms.uPeakScourEnd = this.uniforms.uPeakScourEnd;
+      shader.uniforms.uPeakScourIntensity = this.uniforms.uPeakScourIntensity;
+      shader.uniforms.uSnowRoughness = this.uniforms.uSnowRoughness;
+      shader.uniforms.uSparkleScale = this.uniforms.uSparkleScale;
+      shader.uniforms.uSparkleIntensity = this.uniforms.uSparkleIntensity;
+      shader.uniforms.uSparkleDistance = this.uniforms.uSparkleDistance;
+      shader.uniforms.uSSSIntensity = this.uniforms.uSSSIntensity;
+      shader.uniforms.uSSSColor = this.uniforms.uSSSColor;
+      shader.uniforms.uSheenIntensity = this.uniforms.uSheenIntensity;
+      shader.uniforms.uSheenColor = this.uniforms.uSheenColor;
 
       // Pass world position and normal from vertex shader
       shader.vertexShader = `
@@ -104,6 +174,24 @@ export class TerrainMaterialFactory {
         uniform float uTime;
         uniform vec3 uCameraPosition;
         uniform vec3 uSunDirection;
+
+        // Snow Dynamic Uniforms
+        uniform vec3 uSunlitSnowColor;
+        uniform vec3 uShadowSnowColor;
+        uniform vec3 uCreviceSnowColor;
+        uniform float uSnowSlopeMin;
+        uniform float uSnowSlopeMax;
+        uniform float uPeakScourStart;
+        uniform float uPeakScourEnd;
+        uniform float uPeakScourIntensity;
+        uniform float uSnowRoughness;
+        uniform float uSparkleScale;
+        uniform float uSparkleIntensity;
+        uniform float uSparkleDistance;
+        uniform float uSSSIntensity;
+        uniform vec3 uSSSColor;
+        uniform float uSheenIntensity;
+        uniform vec3 uSheenColor;
 
         varying vec3 vCustomWorldPos;
         varying vec3 vCustomWorldNorm;
@@ -136,9 +224,9 @@ export class TerrainMaterialFactory {
           return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
         }
 
-        // Optimized dynamic ice crystal sparkle
+        // Optimized dynamic ice crystal sparkle with uniform scale
         float computeSnowSparkle(vec3 worldPos, vec3 viewDir, vec3 sunDir, float distFade) {
-          vec2 gridCoord = worldPos.xz * 2.85;
+          vec2 gridCoord = worldPos.xz * uSparkleScale;
           vec2 cellId = floor(gridCoord);
           vec2 cellFract = fract(gridCoord);
           vec2 rnd = hash2(cellId);
@@ -216,10 +304,10 @@ export class TerrainMaterialFactory {
         float organicDrift = (flow1 * 0.60 + flow2 * 0.40 - 0.5) * 0.26;
 
         float effectiveSlope = vCustomWorldNorm.y + organicDrift;
-        float slopeSnow = smoothstep(0.42, 0.76, effectiveSlope);
+        float slopeSnow = smoothstep(uSnowSlopeMin, uSnowSlopeMax, effectiveSlope);
 
-        // Alpine mountain peak wind scouring (smoothly uncovers rocky summit arêtes above 75m)
-        float peakScour = smoothstep(72.0, 125.0, vCustomWorldPos.y) * 0.36;
+        // Alpine mountain peak wind scouring
+        float peakScour = smoothstep(uPeakScourStart, uPeakScourEnd, vCustomWorldPos.y) * uPeakScourIntensity;
 
         float snowFactor = clamp(slopeSnow - peakScour, 0.0, 1.0);
         g_snowFactor = snowFactor;
@@ -268,9 +356,9 @@ export class TerrainMaterialFactory {
         // =========================================================================
         // 3. DYNAMIC CHROMATIC SNOW SHADING (Atmospheric Sunlit vs Shadow Color)
         // =========================================================================
-        vec3 sunlitSnowColor = vec3(1.0, 0.995, 0.975);
-        vec3 shadowSnowColor = vec3(0.73, 0.84, 0.97);
-        vec3 creviceSnowColor = vec3(0.55, 0.69, 0.86);
+        vec3 sunlitSnowColor = uSunlitSnowColor;
+        vec3 shadowSnowColor = uShadowSnowColor;
+        vec3 creviceSnowColor = uCreviceSnowColor;
 
         float sunExposure = clamp(dot(vCustomWorldNorm, uSunDirection) * 1.4, 0.0, 1.0);
         float snowCrevice = smoothstep(0.35, 0.75, flow2);
@@ -290,7 +378,7 @@ export class TerrainMaterialFactory {
 
         float rockRoughness = g_roughX * g_blending.x + g_roughY * g_blending.y + g_roughZ * g_blending.z;
         float snowSlope = 1.0 - clamp(vCustomWorldNorm.y, 0.0, 1.0);
-        float snowRoughness = mix(0.84, 0.62, snowSlope * 0.7);
+        float snowRoughness = mix(uSnowRoughness, uSnowRoughness * 0.74, snowSlope * 0.7);
 
         roughnessFactor = mix(rockRoughness * 0.90 + 0.10, snowRoughness, g_snowFactor);
         `
@@ -363,21 +451,21 @@ export class TerrainMaterialFactory {
           float viewDist = length(uCameraPosition - vCustomWorldPos);
           float sunLit = clamp(dot(g_worldSnowN, L) * 1.8, 0.0, 1.0);
 
-          // Fast-gated sparkles: ONLY compute for fragments in direct sunlight within 48m
-          float distFade = smoothstep(48.0, 6.0, viewDist);
+          // Fast-gated sparkles with dynamic uniform scale, intensity, and distance
+          float distFade = smoothstep(uSparkleDistance, 6.0, viewDist);
           float sparkle = 0.0;
           if (sunLit > 0.05 && distFade > 0.001) {
             sparkle = computeSnowSparkle(vCustomWorldPos, V, L, distFade) * sunLit;
           }
-          vec3 sparkleColor = vec3(1.8, 1.75, 1.6) * sparkle;
+          vec3 sparkleColor = vec3(1.8, 1.75, 1.6) * (sparkle * uSparkleIntensity);
 
           // SSS forward transmission
           float forwardTrans = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) * pow(1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0), 2.0);
-          vec3 sssGlow = vec3(1.0, 0.88, 0.74) * forwardTrans * 0.38 * sunLit;
+          vec3 sssGlow = uSSSColor * forwardTrans * uSSSIntensity * sunLit;
 
           // Glancing Fresnel Sheen
           float fresnel = pow(1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0), 4.0);
-          vec3 sheenGlow = vec3(0.85, 0.92, 1.0) * fresnel * 0.20;
+          vec3 sheenGlow = uSheenColor * fresnel * uSheenIntensity;
 
           outgoingLight += (sparkleColor + sssGlow + sheenGlow) * g_snowFactor;
         }
@@ -386,6 +474,93 @@ export class TerrainMaterialFactory {
         `
       );
     };
+  }
+
+  /**
+   * Set a specific snow property in real-time without recompiling shaders.
+   * @param {string} key
+   * @param {*} value
+   */
+  setSnowProperty(key, value) {
+    this.snowConfig[key] = value;
+    switch (key) {
+      case 'sunlitColor':
+        this.uniforms.uSunlitSnowColor.value.set(value);
+        break;
+      case 'shadowColor':
+        this.uniforms.uShadowSnowColor.value.set(value);
+        break;
+      case 'creviceColor':
+        this.uniforms.uCreviceSnowColor.value.set(value);
+        break;
+      case 'slopeMin':
+        this.uniforms.uSnowSlopeMin.value = value;
+        break;
+      case 'slopeMax':
+        this.uniforms.uSnowSlopeMax.value = value;
+        break;
+      case 'peakScourStart':
+        this.uniforms.uPeakScourStart.value = value;
+        break;
+      case 'peakScourEnd':
+        this.uniforms.uPeakScourEnd.value = value;
+        break;
+      case 'peakScourIntensity':
+        this.uniforms.uPeakScourIntensity.value = value;
+        break;
+      case 'snowNormalScale':
+        this.uniforms.uSnowNormalScale.value = value;
+        break;
+      case 'snowRoughness':
+        this.uniforms.uSnowRoughness.value = value;
+        break;
+      case 'sparkleScale':
+        this.uniforms.uSparkleScale.value = value;
+        break;
+      case 'sparkleIntensity':
+        this.uniforms.uSparkleIntensity.value = value;
+        break;
+      case 'sparkleDistance':
+        this.uniforms.uSparkleDistance.value = value;
+        break;
+      case 'sssIntensity':
+        this.uniforms.uSSSIntensity.value = value;
+        break;
+      case 'sssColor':
+        this.uniforms.uSSSColor.value.set(value);
+        break;
+      case 'sheenIntensity':
+        this.uniforms.uSheenIntensity.value = value;
+        break;
+      case 'sheenColor':
+        this.uniforms.uSheenColor.value.set(value);
+        break;
+    }
+  }
+
+  /**
+   * Update full or partial snow material config.
+   * @param {Partial<typeof DEFAULT_SNOW_CONFIG>} newConfig
+   */
+  setSnowConfig(newConfig) {
+    for (const [k, v] of Object.entries(newConfig)) {
+      this.setSnowProperty(k, v);
+    }
+  }
+
+  /**
+   * Get current active snow config.
+   * @returns {typeof DEFAULT_SNOW_CONFIG}
+   */
+  getSnowConfig() {
+    return { ...this.snowConfig };
+  }
+
+  /**
+   * Reset snow material to pristine default parameters.
+   */
+  resetSnowConfig() {
+    this.setSnowConfig(DEFAULT_SNOW_CONFIG);
   }
 
   /**

@@ -10,8 +10,8 @@ import './style.css';
 const scene = new THREE.Scene();
 
 // Atmosphere / Horizon Fog to blend distant mountain peaks into the skybox
-const fogColor = new THREE.Color(0xa0c6e8);
-scene.fog = new THREE.Fog(fogColor, 320, 680);
+const fogColor = new THREE.Color(0xc6cdd5);
+scene.fog = new THREE.Fog(fogColor, 30, 260);
 
 // --- Camera ---
 const camera = new THREE.PerspectiveCamera(
