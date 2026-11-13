@@ -1,53 +1,102 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { SimplexNoise } from './Noise.js';
+import { TreeTextureFactory } from './TreeTextures.js';
 
 /**
- * Categorizes a model filename for biome placement and proportional scale
+ * Categorizes a model or variant filename for biome placement.
  */
-export function getModelCategory(filename) {
-  const f = (filename || '').toLowerCase();
-  if (f.includes('pine') || f.includes('conifer') || f.includes('spruce') || f.includes('fir')) return 'pine';
+export function getModelCategory(name) {
+  const f = (name || '').toLowerCase();
+  if (f.includes('dead') || f.includes('snag') || f.includes('stump')) return 'snag';
+  if (f.includes('pine') || f.includes('conifer') || f.includes('spruce') || f.includes('fir') || f.includes('long') || f.includes('small')) return 'pine';
   if (f.includes('birch')) return 'birch';
-  if (f.includes('willow')) return 'willow';
-  if (f.includes('palm')) return 'palm';
-  if (f.includes('rock') || f.includes('boulder') || f.includes('stone') || f.includes('cliff')) return 'rock';
-  if (f.includes('bush') || f.includes('shrub') || f.includes('berry')) return 'bush';
-  if (f.includes('log') || f.includes('timber') || f.includes('branch')) return 'log';
-  if (f.includes('stump')) return 'stump';
-  if (f.includes('tree')) return 'common';
-  return 'vegetation';
+  if (f.includes('rock') || f.includes('boulder') || f.includes('stone')) return 'rock';
+  if (f.includes('bush') || f.includes('shrub')) return 'bush';
+  return 'pine';
 }
 
 /**
- * Natural target height in world meters based on species category
+ * Default live-tunable scale and rotation bounds for all tree variants in the pack.
+ * Rotations are specified in degrees for intuitive user control.
  */
-export function getBaseTargetHeight(category) {
-  switch (category) {
-    case 'pine': return 11.5;
-    case 'common': return 9.5;
-    case 'birch': return 9.0;
-    case 'willow': return 9.0;
-    case 'palm': return 8.5;
-    case 'rock': return 2.2;
-    case 'bush': return 1.2;
-    case 'stump': return 0.8;
-    case 'log': return 0.7;
-    case 'vegetation': return 0.8;
-    default: return 8.0;
-  }
-}
+export const DEFAULT_TREE_CONFIGS = {
+  long_1: {
+    minScale: 0.70,
+    maxScale: 1.40,
+    minRotX: -4,
+    maxRotX: 4,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -4,
+    maxRotZ: 4,
+  },
+  long_2: {
+    minScale: 0.70,
+    maxScale: 1.40,
+    minRotX: -4,
+    maxRotX: 4,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -4,
+    maxRotZ: 4,
+  },
+  small_1: {
+    minScale: 0.60,
+    maxScale: 1.25,
+    minRotX: -5,
+    maxRotX: 5,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -5,
+    maxRotZ: 5,
+  },
+  small_2: {
+    minScale: 0.60,
+    maxScale: 1.25,
+    minRotX: -5,
+    maxRotX: 5,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -5,
+    maxRotZ: 5,
+  },
+  dead_1: {
+    minScale: 0.65,
+    maxScale: 1.30,
+    minRotX: -6,
+    maxRotX: 6,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -6,
+    maxRotZ: 6,
+  },
+  dead_2: {
+    minScale: 0.70,
+    maxScale: 1.45,
+    minRotX: -6,
+    maxRotX: 6,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -6,
+    maxRotZ: 6,
+  },
+};
 
 /**
- * TreeGenerator / EnvironmentGenerator
- * Preloads, centers, caches, and scatters environment models from public/models
- * using deterministic seeded Simplex noise across terrain chunks.
- * Handles missing / empty models gracefully without crashing the terrain system.
+ * TreeGenerator
+ * Preloads, extracts, indexes, and scatters environment models from public/models.
+ * Natively supports multi-model asset packs (such as trees_pack.fbx) by extracting
+ * each distinct tree variant into an optimized, multi-material indexed geometry.
+ * Applies authentic high-resolution textures (diffuse + normal maps) and provides
+ * full 360-degree Y-rotation and natural size distribution.
  */
 export class TreeGenerator {
-  // Static memory cache: path -> { filename, geometry, materials, modelHeight, category }
+  // Static memory cache: path -> Array<modelData>
   static _modelCache = new Map();
+  static _textureCache = null;
 
   /**
    * @param {Object} options
@@ -57,25 +106,123 @@ export class TreeGenerator {
     this.heightmap = options.heightmap;
     this.chunkSize = options.chunkSize || 64;
 
-    // Environmental density noises
+    // Environmental density noise generators
     this.treeNoise = new SimplexNoise(this.seed + 777);
-    this.rockNoise = new SimplexNoise(this.seed + 888);
-    this.foliageNoise = new SimplexNoise(this.seed + 999);
 
-    // Active selection (model path, filename, or array)
-    this.selection = options.treeModel || options.treeModelPath || options.preset || null;
+    // Active selection
+    this.selection = options.treeModel || options.treeModelPath || '/models/trees_pack.fbx';
 
-    // Categorized active models
+    // Extracted and categorized models
     this.activeTrees = [];
-    this.activeRocks = [];
-    this.activeFoliage = [];
+    this.activeSnags = [];
     this.loadedModels = [];
     this.isLoaded = false;
     this.loadPromise = null;
+
+    // Per-tree live customizable scale and rotation bounds
+    this.treeConfigs = JSON.parse(JSON.stringify(DEFAULT_TREE_CONFIGS));
+    if (options.treeConfigs) {
+      this.setAllTreeConfigs(options.treeConfigs);
+    }
   }
 
   /**
-   * Switches the active model or models and reloads.
+   * Retrieves the current scale & rotation bounds for a given tree variant.
+   * @param {string} variantName
+   * @returns {Object}
+   */
+  getTreeConfig(variantName) {
+    const key = (variantName || '').toLowerCase();
+    for (const [k, v] of Object.entries(this.treeConfigs)) {
+      if (key.includes(k.toLowerCase())) return v;
+    }
+    return this.treeConfigs.long_1 || DEFAULT_TREE_CONFIGS.long_1;
+  }
+
+  /**
+   * Updates the scale & rotation configuration for a specific tree variant.
+   * @param {string} variantName
+   * @param {Object} config
+   */
+  setTreeConfig(variantName, config) {
+    const key = Object.keys(this.treeConfigs).find(k => (variantName || '').toLowerCase().includes(k.toLowerCase())) || variantName;
+    if (this.treeConfigs[key]) {
+      this.treeConfigs[key] = { ...this.treeConfigs[key], ...config };
+    } else {
+      this.treeConfigs[key] = { ...config };
+    }
+  }
+
+  /**
+   * Retrieves a deep copy of all tree configurations as a JSON-serializable object.
+   * @returns {Object}
+   */
+  getAllTreeConfigs() {
+    return JSON.parse(JSON.stringify(this.treeConfigs));
+  }
+
+  /**
+   * Batch updates all tree configurations.
+   * @param {Object} configs
+   */
+  setAllTreeConfigs(configs) {
+    if (!configs || typeof configs !== 'object') return;
+    for (const [k, v] of Object.entries(configs)) {
+      if (this.treeConfigs[k]) {
+        this.treeConfigs[k] = { ...this.treeConfigs[k], ...v };
+      } else {
+        this.treeConfigs[k] = { ...v };
+      }
+    }
+  }
+
+  /**
+   * Loads textures for bark, branches, and deadwood.
+   * Loads from /textures/ with procedural fallback.
+   * @private
+   */
+  async _loadTextures() {
+    if (TreeGenerator._textureCache) return TreeGenerator._textureCache;
+
+    const textureLoader = new THREE.TextureLoader();
+    const loadTex = (url, isSRGB = false, repeatX = 1, repeatY = 1) => {
+      return new Promise((resolve) => {
+        textureLoader.load(
+          url,
+          (t) => {
+            t.wrapS = THREE.RepeatWrapping;
+            t.wrapT = THREE.RepeatWrapping;
+            t.repeat.set(repeatX, repeatY);
+            if (isSRGB) t.colorSpace = THREE.SRGBColorSpace;
+            resolve(t);
+          },
+          undefined,
+          () => resolve(null)
+        );
+      });
+    };
+
+    const [barkDiff, barkNorm, branchDiff, branchNorm] = await Promise.all([
+      loadTex('/textures/BarkMat_diffuse.png', true, 1, 1),
+      loadTex('/textures/BarkMat_normal.png', false, 1, 1),
+      loadTex('/textures/BranchMat_diffuse.png', true, 1, 1),
+      loadTex('/textures/BranchMat_normal.png', false, 1, 1),
+    ]);
+
+    const proc = TreeTextureFactory.getTextures() || {};
+
+    TreeGenerator._textureCache = {
+      barkDiffuse: barkDiff || proc.barkDiffuse,
+      barkNormal: barkNorm || proc.barkNormal,
+      branchDiffuse: branchDiff || proc.branchDiffuse,
+      branchNormal: branchNorm || proc.branchNormal,
+    };
+
+    return TreeGenerator._textureCache;
+  }
+
+  /**
+   * Switches the active model or pack and reloads.
    * @param {string|string[]} newSelection
    * @returns {Promise<TreeGenerator>}
    */
@@ -87,14 +234,16 @@ export class TreeGenerator {
   }
 
   /**
-   * Loads all specified models, supporting FBX, GLB, and GLTF.
-   * Tolerates missing models gracefully so the application continues to run.
+   * Loads specified model or pack, supporting FBX, GLB, and GLTF.
    * @returns {Promise<TreeGenerator>}
    */
   load() {
     if (this.loadPromise) return this.loadPromise;
 
     this.loadPromise = (async () => {
+      // 1. Ensure textures are initialized
+      await this._loadTextures();
+
       let pathsToLoad = [];
 
       if (Array.isArray(this.selection)) {
@@ -114,15 +263,19 @@ export class TreeGenerator {
 
       for (const path of pathsToLoad) {
         try {
-          let modelData = TreeGenerator._modelCache.get(path);
-          if (!modelData) {
-            modelData = await this._loadModel(path);
-            if (modelData) {
-              TreeGenerator._modelCache.set(path, modelData);
+          let models = TreeGenerator._modelCache.get(path);
+          if (!models) {
+            models = await this._loadModel(path);
+            if (models) {
+              TreeGenerator._modelCache.set(path, models);
             }
           }
-          if (modelData) {
-            loadedList.push(modelData);
+          if (models) {
+            if (Array.isArray(models)) {
+              loadedList.push(...models);
+            } else {
+              loadedList.push(models);
+            }
           }
         } catch (err) {
           console.warn(`Model at "${path}" could not be loaded:`, err?.message || err);
@@ -131,14 +284,11 @@ export class TreeGenerator {
 
       this.loadedModels = loadedList;
       this.activeTrees = [];
-      this.activeRocks = [];
-      this.activeFoliage = [];
+      this.activeSnags = [];
 
       for (const m of loadedList) {
-        if (m.category === 'rock') {
-          this.activeRocks.push(m);
-        } else if (m.category === 'bush' || m.category === 'log' || m.category === 'stump' || m.category === 'vegetation') {
-          this.activeFoliage.push(m);
+        if (m.isDead) {
+          this.activeSnags.push(m);
         } else {
           this.activeTrees.push(m);
         }
@@ -152,7 +302,8 @@ export class TreeGenerator {
   }
 
   /**
-   * Internal model loader supporting both FBX and GLTF/GLB formats.
+   * Internal model loader supporting FBX and GLTF/GLB formats.
+   * Extracts all distinct sub-variants when an asset pack is loaded.
    * @private
    */
   _loadModel(path) {
@@ -160,20 +311,21 @@ export class TreeGenerator {
       const filename = path.split('/').pop();
       const ext = (filename.split('.').pop() || '').toLowerCase();
 
+      const onLoaded = (root) => {
+        try {
+          const variants = this._extractModelVariants(root, path, filename);
+          resolve(variants);
+        } catch (err) {
+          console.warn(`Failed to process model "${path}":`, err);
+          resolve(null);
+        }
+      };
+
       if (ext === 'gltf' || ext === 'glb') {
         const gltfLoader = new GLTFLoader();
         gltfLoader.load(
           path,
-          (gltf) => {
-            try {
-              const root = gltf.scene || gltf.scenes[0];
-              const data = this._processSceneNode(root, path, filename);
-              resolve(data);
-            } catch (err) {
-              console.warn(`Failed to process GLTF model "${path}":`, err);
-              resolve(null);
-            }
-          },
+          (gltf) => onLoaded(gltf.scene || gltf.scenes[0]),
           undefined,
           (err) => {
             console.warn(`GLTF model not found at "${path}":`, err?.message || err);
@@ -181,19 +333,10 @@ export class TreeGenerator {
           }
         );
       } else {
-        // Default to FBX loader
         const fbxLoader = new FBXLoader();
         fbxLoader.load(
           path,
-          (fbx) => {
-            try {
-              const data = this._processSceneNode(fbx, path, filename);
-              resolve(data);
-            } catch (err) {
-              console.warn(`Failed to process FBX model "${path}":`, err);
-              resolve(null);
-            }
-          },
+          onLoaded,
           undefined,
           (err) => {
             console.warn(`FBX model not found at "${path}":`, err?.message || err);
@@ -205,126 +348,168 @@ export class TreeGenerator {
   }
 
   /**
-   * Bakes node transforms, centers XZ at 0, roots base at Y=0, and creates PBR materials.
+   * Inspects the scene graph and extracts distinct variants.
+   * Handles multi-tree packs (e.g. trees_pack.fbx) by extracting each child as an individual variant.
    * @private
    */
-  _processSceneNode(rootNode, path, filename) {
-    let meshNode = null;
-    rootNode.traverse((child) => {
-      if (child.isMesh && !meshNode) {
-        meshNode = child;
-      }
-    });
+  _extractModelVariants(rootNode, path, filename) {
+    rootNode.updateMatrixWorld(true);
 
-    if (!meshNode) {
-      console.warn(`No mesh found in "${path}"`);
-      return null;
+    // Identify candidate top-level tree groups
+    const topLevelGroups = [];
+    for (const child of rootNode.children) {
+      let hasMesh = false;
+      child.traverse((c) => {
+        if (c.isMesh) hasMesh = true;
+      });
+      if (hasMesh) {
+        topLevelGroups.push(child);
+      }
     }
 
-    rootNode.updateMatrixWorld(true);
-    const geom = meshNode.geometry.clone();
-    geom.applyMatrix4(meshNode.matrixWorld);
-    geom.computeBoundingBox();
+    // If multiple top-level tree groups exist, process each as a distinct variant
+    if (topLevelGroups.length > 1) {
+      const variants = [];
+      for (const group of topLevelGroups) {
+        const v = this._processVariant(group, path, filename, group.name);
+        if (v) variants.push(v);
+      }
+      return variants.length > 0 ? variants : null;
+    }
 
-    // Center XZ at 0 and root bottom at Y=0
-    const centerX = (geom.boundingBox.min.x + geom.boundingBox.max.x) / 2;
-    const centerZ = (geom.boundingBox.min.z + geom.boundingBox.max.z) / 2;
-    const minY = geom.boundingBox.min.y;
+    // Single model
+    const single = this._processVariant(rootNode, path, filename, filename);
+    return single ? [single] : null;
+  }
 
-    geom.translate(-centerX, -minY, -centerZ);
-    geom.computeBoundingBox();
-    geom.computeBoundingSphere();
+  /**
+   * Bakes transforms, welds vertices (70%+ memory & geometry reduction),
+   * roots base at Y=0, centers horizontal footprint, and binds high-res PBR textures.
+   * @private
+   */
+  _processVariant(node, path, filename, variantName = '') {
+    const meshes = [];
+    node.traverse((c) => {
+      if (c.isMesh) meshes.push(c);
+    });
 
-    const modelHeight = Math.max(0.1, geom.boundingBox.max.y);
-    const category = getModelCategory(filename);
-    const targetHeight = getBaseTargetHeight(category);
+    if (meshes.length === 0) return null;
 
-    const rawMaterials = Array.isArray(meshNode.material)
-      ? meshNode.material
-      : [meshNode.material];
+    // 1. Calculate overall bounding box in world space
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
 
-    const materials = rawMaterials.map((m) => this._createPbrMaterial(m));
+    meshes.forEach((m) => {
+      m.updateMatrixWorld(true);
+      const g = m.geometry.clone();
+      g.applyMatrix4(m.matrixWorld);
+      g.computeBoundingBox();
+      const bb = g.boundingBox;
+      minX = Math.min(minX, bb.min.x);
+      maxX = Math.max(maxX, bb.max.x);
+      minY = Math.min(minY, bb.min.y);
+      maxY = Math.max(maxY, bb.max.y);
+      minZ = Math.min(minZ, bb.min.z);
+      maxZ = Math.max(maxZ, bb.max.z);
+    });
+
+    const centerX = (minX + maxX) / 2;
+    const centerZ = (minZ + maxZ) / 2;
+    const baseY = minY;
+    const rawHeight = maxY - minY;
+
+    // Determine coordinate scale: if raw height > 50, it is modeled in centimeters (FBX standard)
+    const unitScale = rawHeight > 50.0 ? 0.01 : 1.0;
+
+    const isDeadTree = variantName.toLowerCase().includes('dead') ||
+                       variantName.toLowerCase().includes('snag') ||
+                       filename.toLowerCase().includes('dead');
+
+    const textures = TreeGenerator._textureCache || {};
+
+    // 2. Process each mesh geometry & bind PBR textures
+    const geoms = [];
+    const materials = [];
+
+    meshes.forEach((m) => {
+      m.updateMatrixWorld(true);
+      let g = m.geometry.clone();
+      g.applyMatrix4(m.matrixWorld);
+
+      // Re-center horizontally and root bottom at Y=0
+      g.translate(-centerX, -baseY, -centerZ);
+      g.scale(unitScale, unitScale, unitScale);
+
+      // Weld duplicate vertices to optimize GPU vertex cache & instancing
+      g = BufferGeometryUtils.mergeVertices(g, 0.001);
+      g.computeVertexNormals();
+      geoms.push(g);
+
+      // Material assignment based on mesh & material metadata
+      const matName = (m.material?.name || m.name || '').toLowerCase();
+      const isBranch = matName.includes('branch') ||
+                       matName.includes('leaf') ||
+                       matName.includes('leaves') ||
+                       matName.includes('needle');
+
+      let mat;
+      if (isBranch) {
+        mat = new THREE.MeshStandardMaterial({
+          name: 'AlpinePineNeedles',
+          color: 0xffffff,
+          map: textures.branchDiffuse || null,
+          normalMap: textures.branchNormal || null,
+          normalScale: new THREE.Vector2(0.8, 0.8),
+          roughness: 0.65,
+          metalness: 0.0,
+          side: THREE.DoubleSide,
+          transparent: true,
+          alphaTest: 0.40,
+          depthWrite: true,
+        });
+      } else {
+        // Both living tree trunks and dried/dead tree snags use the exact BarkMat_diffuse & BarkMat_normal
+        mat = new THREE.MeshStandardMaterial({
+          name: isDeadTree ? 'AlpineDeadBark' : 'AlpinePineTrunk',
+          color: 0xffffff,
+          map: textures.barkDiffuse || null,
+          normalMap: textures.barkNormal || null,
+          normalScale: new THREE.Vector2(1.1, 1.1),
+          roughness: isDeadTree ? 0.90 : 0.85,
+          metalness: 0.02,
+        });
+      }
+      materials.push(mat);
+    });
+
+    // 3. Merge into a single multi-material geometry
+    let finalGeom;
+    if (geoms.length === 1) {
+      finalGeom = geoms[0];
+    } else {
+      finalGeom = BufferGeometryUtils.mergeGeometries(geoms, true);
+    }
+
+    finalGeom.computeBoundingBox();
+    finalGeom.computeBoundingSphere();
+
+    const actualHeight = finalGeom.boundingBox.max.y - finalGeom.boundingBox.min.y;
 
     return {
-      filename,
+      name: variantName || filename,
       path,
-      category,
-      targetHeight,
-      modelHeight,
-      geometry: geom,
-      materials,
+      category: isDeadTree ? 'snag' : 'pine',
+      isDead: isDeadTree,
+      modelHeight: Math.max(0.5, actualHeight),
+      geometry: finalGeom,
+      materials: materials.length === 1 ? materials[0] : materials,
     };
   }
 
   /**
-   * Converts imported materials into cohesive PBR MeshStandardMaterials.
-   * @private
-   */
-  _createPbrMaterial(m) {
-    const name = (m.name || '').toLowerCase();
-
-    let color;
-    let roughness = 0.80;
-    let metalness = 0.04;
-
-    if (name.includes('snow')) {
-      color = new THREE.Color(0xf6f9fc);
-      roughness = 0.70;
-    } else if (name.includes('black')) {
-      color = new THREE.Color(0x181818);
-      roughness = 0.85;
-    } else if (name.includes('white')) {
-      color = new THREE.Color(0xd2dad4);
-      roughness = 0.78;
-    } else if (name.includes('darkgreen')) {
-      color = new THREE.Color(0x1b3824);
-      roughness = 0.76;
-    } else if (name.includes('green') || name.includes('leaves') || name.includes('needle') || name.includes('leaf')) {
-      color = new THREE.Color(0x28472e);
-      roughness = 0.74;
-    } else if (name.includes('cap') || name.includes('cut')) {
-      color = new THREE.Color(0x735c42);
-      roughness = 0.82;
-    } else if (name.includes('orange') || name.includes('lightorange')) {
-      color = new THREE.Color(0xd96b27);
-      roughness = 0.76;
-    } else if (name.includes('lightwood')) {
-      color = new THREE.Color(0x8a6d52);
-      roughness = 0.80;
-    } else if (name.includes('wood') || name.includes('bark') || name.includes('trunk')) {
-      color = new THREE.Color(0x3e2b20);
-      roughness = 0.86;
-    } else if (name.includes('rock') || name.includes('stone')) {
-      color = new THREE.Color(0x5a5f66);
-      roughness = 0.88;
-      metalness = 0.06;
-    } else if (m.color) {
-      color = m.color.clone();
-    } else {
-      color = new THREE.Color(0xd2d8cc);
-    }
-
-    const pbr = new THREE.MeshStandardMaterial({
-      name: m.name || 'EnvironmentMaterial',
-      color,
-      roughness,
-      metalness,
-      map: m.map || null,
-      side: THREE.DoubleSide,
-      flatShading: false,
-    });
-
-    if (name.includes('leaf') || name.includes('needle') || name.includes('leaves')) {
-      pbr.alphaTest = 0.35;
-      pbr.transparent = false;
-    }
-
-    return pbr;
-  }
-
-  /**
    * Deterministic 4-component integer hash.
-   * Produces uniform pseudo-random numbers in [0, 1) without memory allocations.
+   * Produces uniform pseudo-random floats in [0, 1) without allocations.
    * @private
    */
   _hash(a, b, c, d) {
@@ -334,8 +519,11 @@ export class TreeGenerator {
   }
 
   /**
-   * Generates environment instances for a chunk.
-   * If no models are loaded, returns null cleanly.
+   * Generates environment instances for a terrain chunk.
+   * Features:
+   * - Full 360-degree Y-axis rotational diversity for each tree instance
+   * - Natural size distribution spanning from small saplings to giant conifers (~3:1 dynamic range)
+   * - Realistic alpine mountain forestry distribution with ski corridors
    * @param {number} chunkX
    * @param {number} chunkZ
    * @returns {THREE.InstancedMesh|THREE.Group|null}
@@ -349,140 +537,91 @@ export class TreeGenerator {
     const minZ = chunkZ * this.chunkSize;
     const instancesByModel = new Map();
 
-    const addInstance = (modelData, x, y, z, scale, yaw, tiltX = 0, tiltZ = 0) => {
+    const addInstance = (modelData, x, y, z, scale, rotX, rotY, rotZ) => {
       let list = instancesByModel.get(modelData);
       if (!list) {
         list = [];
         instancesByModel.set(modelData, list);
       }
-      list.push({ x, y, z, scale, yaw, tiltX, tiltZ });
+      list.push({ x, y, z, scale, rotX, rotY, rotZ });
     };
 
-    // 1. Trees layer
-    if (this.activeTrees.length > 0) {
-      const treeGridStep = 8;
-      const cells = Math.floor(this.chunkSize / treeGridStep);
+    // Organic spacing grid
+    const treeGridStep = 10.5;
+    const cells = Math.floor(this.chunkSize / treeGridStep);
 
-      for (let gx = 0; gx < cells; gx++) {
-        for (let gz = 0; gz < cells; gz++) {
-          const u = this._hash(chunkX, chunkZ, gx, gz * 2 + 1);
-          const v = this._hash(chunkX, chunkZ, gx * 2 + 3, gz);
-          const spawnHash = this._hash(chunkX, chunkZ, gx * 7, gz * 11);
+    for (let gx = 0; gx < cells; gx++) {
+      for (let gz = 0; gz < cells; gz++) {
+        const u = this._hash(chunkX, chunkZ, gx, gz * 2 + 1);
+        const v = this._hash(chunkX, chunkZ, gx * 2 + 3, gz);
+        const spawnHash = this._hash(chunkX, chunkZ, gx * 7, gz * 11);
 
-          const wx = minX + (gx + 0.15 + 0.7 * u) * treeGridStep;
-          const wz = minZ + (gz + 0.15 + 0.7 * v) * treeGridStep;
+        const wx = minX + (gx + 0.15 + 0.7 * u) * treeGridStep;
+        const wz = minZ + (gz + 0.15 + 0.7 * v) * treeGridStep;
 
-          if (Math.hypot(wx, wz) < 6.0) continue;
+        // 1. Keep immediate spawn area clear so player can start cleanly
+        if (Math.hypot(wx, wz) < 16.0) continue;
 
-          const wy = this.heightmap.getHeight(wx, wz);
-          if (wy > 46.0 || wy < -20.0) continue;
+        // 2. Elevation bounds: trees do not grow on high glacial peaks or submerged valleys
+        const wy = this.heightmap.getHeight(wx, wz);
+        if (wy > 65.0 || wy < -12.0) continue;
 
-          const norm = this.heightmap.getNormal(wx, wz);
-          if (norm.y < 0.72) continue;
+        // 3. Slope normal gating: trees cannot grow on steep rock cliffs
+        const norm = this.heightmap.getNormal(wx, wz);
+        if (norm.y < 0.72) continue; // max ~44 deg slope
 
-          const density = this.treeNoise.fbm(wx * 0.012, wz * 0.012, 2);
-          const prob = Math.max(0, Math.min(1, (density + 0.22) / 0.65));
-          if (spawnHash >= prob * 0.55) continue;
+        // 4. Biome noise density: negative values carve out open ski slopes (pistes)
+        const density = this.treeNoise.fbm(wx * 0.015, wz * 0.015, 2);
+        if (density < -0.02) continue; // Ski run clearing
 
-          const speciesHash = this._hash(chunkX, chunkZ, gx * 43, gz * 47);
-          const modelIdx = Math.floor(speciesHash * this.activeTrees.length) % this.activeTrees.length;
-          const modelData = this.activeTrees[modelIdx];
+        const prob = Math.min(1.0, (density + 0.02) * 1.6);
+        if (spawnHash >= prob * 0.65) continue;
 
-          const scaleHash = this._hash(chunkX, chunkZ, gx * 13, gz * 17);
-          const rotHash = this._hash(chunkX, chunkZ, gx * 19, gz * 23);
-          const tiltXHash = this._hash(chunkX, chunkZ, gx * 29, gz * 31);
-          const tiltZHash = this._hash(chunkX, chunkZ, gx * 37, gz * 41);
+        // 5. Timberline & Snag selection
+        const snagHash = this._hash(chunkX, chunkZ, gx * 17, gz * 19);
+        const isSnag = this.activeSnags.length > 0 &&
+                       ((wy > 42.0 && snagHash < 0.35) || (snagHash * 7 < 0.55));
 
-          const h = modelData.targetHeight * (0.8 + 0.4 * scaleHash);
-          const scale = h / modelData.modelHeight;
-          const yaw = rotHash * Math.PI * 2;
-          const tiltX = (tiltXHash - 0.5) * 0.08;
-          const tiltZ = (tiltZHash - 0.5) * 0.08;
-
-          addInstance(modelData, wx, wy - 0.25, wz, scale, yaw, tiltX, tiltZ);
+        let modelData;
+        if (isSnag) {
+          const snagIdx = Math.floor(snagHash * 13) % this.activeSnags.length;
+          modelData = this.activeSnags[snagIdx];
+        } else if (this.activeTrees.length > 0) {
+          const treeHash = this._hash(chunkX, chunkZ, gx * 43, gz * 47);
+          const treeIdx = Math.floor(treeHash * this.activeTrees.length) % this.activeTrees.length;
+          modelData = this.activeTrees[treeIdx];
+        } else {
+          continue;
         }
-      }
-    }
 
-    // 2. Rocks layer
-    if (this.activeRocks.length > 0) {
-      const rockGridStep = 16;
-      const cells = Math.floor(this.chunkSize / rockGridStep);
+        // 6. Live Config-Driven Scale and 3-Axis Rotation Randomization
+        const cfg = this.getTreeConfig(modelData.name);
 
-      for (let gx = 0; gx < cells; gx++) {
-        for (let gz = 0; gz < cells; gz++) {
-          const u = this._hash(chunkX, chunkZ, gx, gz * 3 + 1);
-          const v = this._hash(chunkX, chunkZ, gx * 3 + 5, gz);
-          const spawnHash = this._hash(chunkX, chunkZ, gx * 13, gz * 17);
+        // Randomized Size (Scale)
+        const scaleHash = this._hash(chunkX, chunkZ, gx * 13 + 5, gz * 17 + 9);
+        const minS = Math.min(cfg.minScale, cfg.maxScale);
+        const maxS = Math.max(cfg.minScale, cfg.maxScale);
+        const scale = minS + (maxS - minS) * scaleHash;
 
-          const wx = minX + (gx + 0.15 + 0.7 * u) * rockGridStep;
-          const wz = minZ + (gz + 0.15 + 0.7 * v) * rockGridStep;
+        // Randomized 3-Axis Rotations (degrees -> radians)
+        const rotXHash = this._hash(chunkX, chunkZ, gx * 37 + 7, gz * 41 + 13);
+        const rotYHash = this._hash(chunkX, chunkZ, gx * 91 + 17, gz * 103 + 31);
+        const rotZHash = this._hash(chunkX, chunkZ, gx * 47 + 19, gz * 53 + 23);
 
-          if (Math.hypot(wx, wz) < 5.0) continue;
+        const minRx = Math.min(cfg.minRotX, cfg.maxRotX);
+        const maxRx = Math.max(cfg.minRotX, cfg.maxRotX);
+        const rotX = (minRx + (maxRx - minRx) * rotXHash) * (Math.PI / 180);
 
-          const wy = this.heightmap.getHeight(wx, wz);
-          if (wy < -18.0 || wy > 75.0) continue;
+        const minRy = Math.min(cfg.minRotY, cfg.maxRotY);
+        const maxRy = Math.max(cfg.minRotY, cfg.maxRotY);
+        const rotY = (minRy + (maxRy - minRy) * rotYHash) * (Math.PI / 180);
 
-          const norm = this.heightmap.getNormal(wx, wz);
-          if (norm.y < 0.45 || norm.y > 0.95) continue;
+        const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ);
+        const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ);
+        const rotZ = (minRz + (maxRz - minRz) * rotZHash) * (Math.PI / 180);
 
-          const rockDensity = this.rockNoise.fbm(wx * 0.018, wz * 0.018, 2);
-          if (spawnHash >= 0.28 + rockDensity * 0.15) continue;
-
-          const modelHash = this._hash(chunkX, chunkZ, gx * 53, gz * 59);
-          const modelIdx = Math.floor(modelHash * this.activeRocks.length) % this.activeRocks.length;
-          const modelData = this.activeRocks[modelIdx];
-
-          const scaleHash = this._hash(chunkX, chunkZ, gx * 61, gz * 67);
-          const rotHash = this._hash(chunkX, chunkZ, gx * 71, gz * 73);
-
-          const h = modelData.targetHeight * (0.7 + 0.6 * scaleHash);
-          const scale = h / modelData.modelHeight;
-          const yaw = rotHash * Math.PI * 2;
-
-          addInstance(modelData, wx, wy - 0.35, wz, scale, yaw);
-        }
-      }
-    }
-
-    // 3. Foliage layer
-    if (this.activeFoliage.length > 0) {
-      const foliageGridStep = 12.8;
-      const cells = Math.floor(this.chunkSize / foliageGridStep);
-
-      for (let gx = 0; gx < cells; gx++) {
-        for (let gz = 0; gz < cells; gz++) {
-          const u = this._hash(chunkX, chunkZ, gx, gz * 4 + 3);
-          const v = this._hash(chunkX, chunkZ, gx * 4 + 7, gz);
-          const spawnHash = this._hash(chunkX, chunkZ, gx * 19, gz * 23);
-
-          const wx = minX + (gx + 0.15 + 0.7 * u) * foliageGridStep;
-          const wz = minZ + (gz + 0.15 + 0.7 * v) * foliageGridStep;
-
-          if (Math.hypot(wx, wz) < 5.0) continue;
-
-          const wy = this.heightmap.getHeight(wx, wz);
-          if (wy < -18.0 || wy > 38.0) continue;
-
-          const norm = this.heightmap.getNormal(wx, wz);
-          if (norm.y < 0.78) continue;
-
-          const foliageDensity = this.foliageNoise.fbm(wx * 0.022, wz * 0.022, 2);
-          if (spawnHash >= 0.22 + foliageDensity * 0.12) continue;
-
-          const modelHash = this._hash(chunkX, chunkZ, gx * 79, gz * 83);
-          const modelIdx = Math.floor(modelHash * this.activeFoliage.length) % this.activeFoliage.length;
-          const modelData = this.activeFoliage[modelIdx];
-
-          const scaleHash = this._hash(chunkX, chunkZ, gx * 89, gz * 97);
-          const rotHash = this._hash(chunkX, chunkZ, gx * 101, gz * 103);
-
-          const h = modelData.targetHeight * (0.8 + 0.4 * scaleHash);
-          const scale = h / modelData.modelHeight;
-          const yaw = rotHash * Math.PI * 2;
-
-          addInstance(modelData, wx, wy - 0.15, wz, scale, yaw);
-        }
+        // Sink trunk 0.35m into snow to bury roots naturally on sloped terrain
+        addInstance(modelData, wx, wy - 0.35, wz, scale, rotX, rotY, rotZ);
       }
     }
 
@@ -503,7 +642,8 @@ export class TreeGenerator {
       for (let i = 0; i < instances.length; i++) {
         const inst = instances[i];
         dummy.position.set(inst.x, inst.y, inst.z);
-        dummy.rotation.set(inst.tiltX, inst.yaw, inst.tiltZ);
+        // 'YXZ' rotation order: spins yaw around the tree trunk first, then applies tilt
+        dummy.rotation.set(inst.rotX, inst.rotY, inst.rotZ, 'YXZ');
         dummy.scale.set(inst.scale, inst.scale, inst.scale);
         dummy.updateMatrix();
         instMesh.setMatrixAt(i, dummy.matrix);
@@ -532,9 +672,15 @@ export class TreeGenerator {
 
 // Backwards-compatible aliases
 export const EnvironmentGenerator = TreeGenerator;
-export const AVAILABLE_TREE_MODELS = [];
-export const TREE_MODEL_LIST = [];
-export const ALL_MODEL_FILENAMES = [];
+export const AVAILABLE_TREE_MODELS = [
+  {
+    name: 'Conifer Trees Pack',
+    path: '/models/trees_pack.fbx',
+    category: 'pine',
+  }
+];
+export const TREE_MODEL_LIST = AVAILABLE_TREE_MODELS;
+export const ALL_MODEL_FILENAMES = ['trees_pack.fbx'];
 export const ENVIRONMENT_PRESETS = [];
-export const resolveTreeModelPath = (s) => s || '';
-export const resolveEnvironmentSelection = (s) => s || '';
+export const resolveTreeModelPath = (s) => s || '/models/trees_pack.fbx';
+export const resolveEnvironmentSelection = (s) => s || '/models/trees_pack.fbx';

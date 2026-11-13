@@ -3,6 +3,7 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { FpsCounter } from './perf/FpsCounter.js';
+import { TreeConfigUI } from './ui/TreeConfigUI.js';
 import './style.css';
 
 // --- Scene Setup ---
@@ -64,14 +65,20 @@ const terrainManager = new TerrainManager(scene, {
   renderDistance: 5,     // Expanded view distance for landscape vista
   maxBuildsPerFrame: 2,  // Smooth frame pacing
   seed: 4812,
-  treeModel: null,       // Clean terrain mode
+  treeModel: '/models/trees_pack.fbx', // Populate world with coniferous trees pack
 });
 
 // --- Player Controller ---
 const player = new PlayerController(camera, canvas, terrainManager);
 
+// Expose handle for runtime telemetry
+window.__GAME = { scene, camera, player, terrainManager };
+
 // --- High-Performance FPS & Telemetry Counter (Top Left) ---
 const fpsCounter = new FpsCounter();
+
+// --- Live Interactive Tree Configuration UI (Top Right / [T] key) ---
+const treeConfigUI = new TreeConfigUI(terrainManager);
 
 // --- Window Resize Listener ---
 window.addEventListener('resize', () => {

@@ -63,8 +63,13 @@ export class TerrainManager {
    */
   async setTreeModel(modelSelection) {
     await this.treeGenerator.setModel(modelSelection);
+    this.rebuildAllTrees();
+  }
 
-    // Rebuild trees for all currently active chunks
+  /**
+   * Rebuilds tree instances across all currently active chunks immediately.
+   */
+  rebuildAllTrees() {
     for (const chunk of this.loadedChunks.values()) {
       chunk.rebuildTrees(this.scene);
     }

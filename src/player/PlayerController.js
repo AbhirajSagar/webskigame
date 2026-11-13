@@ -62,9 +62,9 @@ export class PlayerController {
     this.flySpeed = 45.0;
     this.flySprintSpeed = 120.0;
 
-    // Orientation (aimed toward the mountain vista)
-    this.yaw = -1.9;
-    this.pitch = 0.05;
+    // Orientation (aimed down the mountain slope toward the forest vista)
+    this.yaw = 1.35;
+    this.pitch = -0.05;
     this.isPointerLocked = false;
     this.isDragging = false;
     this.prevMouseX = 0;
