@@ -1,5 +1,15 @@
 import * as THREE from 'three';
 
+// Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
+const _scratchForward = new THREE.Vector3();
+const _scratchRight = new THREE.Vector3();
+const _scratchForwardXZ = new THREE.Vector3();
+const _scratchRightXZ = new THREE.Vector3();
+const _scratchGVec = new THREE.Vector3();
+const _scratchDownhill = new THREE.Vector3();
+const _scratchMoveDir = new THREE.Vector3();
+const _scratchEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
 /**
  * PlayerController
  * High-fidelity alpine ski physics controller with grounded momentum,
@@ -230,10 +240,9 @@ export class PlayerController {
   }
 
   _updateCameraRotation() {
-    const euler = new THREE.Euler(0, 0, 0, 'YXZ');
-    euler.x = this.pitch;
-    euler.y = this.yaw;
-    this.camera.quaternion.setFromEuler(euler);
+    _scratchEuler.x = this.pitch;
+    _scratchEuler.y = this.yaw;
+    this.camera.quaternion.setFromEuler(_scratchEuler);
   }
 
   toggleMode() {
@@ -271,14 +280,14 @@ export class PlayerController {
       this.velocity.set(0, 0, 0);
     }
 
-    // Compute camera heading vectors
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    // Compute camera heading vectors (0 runtime heap allocations)
+    _scratchForward.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    _scratchRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
 
     if (this.mode === 'ski') {
-      this._updateSkiPhysics(dt, forward, right);
+      this._updateSkiPhysics(dt, _scratchForward, _scratchRight);
     } else {
-      this._updateFlyMode(dt, forward, right);
+      this._updateFlyMode(dt, _scratchForward, _scratchRight);
     }
 
     // Speed calculation
@@ -303,13 +312,13 @@ export class PlayerController {
    * @private
    */
   _updateSkiPhysics(dt, forward, right) {
-    const forwardXZ = new THREE.Vector3(forward.x, 0, forward.z);
-    if (forwardXZ.lengthSq() > 0.0001) forwardXZ.normalize();
-    else forwardXZ.set(0, 0, -1);
+    _scratchForwardXZ.set(forward.x, 0, forward.z);
+    if (_scratchForwardXZ.lengthSq() > 0.0001) _scratchForwardXZ.normalize();
+    else _scratchForwardXZ.set(0, 0, -1);
 
-    const rightXZ = new THREE.Vector3(right.x, 0, right.z);
-    if (rightXZ.lengthSq() > 0.0001) rightXZ.normalize();
-    else rightXZ.set(1, 0, 0);
+    _scratchRightXZ.set(right.x, 0, right.z);
+    if (_scratchRightXZ.lengthSq() > 0.0001) _scratchRightXZ.normalize();
+    else _scratchRightXZ.set(1, 0, 0);
 
     const isTucking = this.keys.forward || this.keys.sprint;
     const isBraking = this.keys.backward;
@@ -322,18 +331,18 @@ export class PlayerController {
       this.airTime = 0.0;
 
       // 1. Downhill Gravity Acceleration (F = m * g * sin(theta))
-      const gVec = new THREE.Vector3(0, -this.gravity, 0);
-      const downhill = gVec.clone().addScaledVector(normal, -gVec.dot(normal));
+      _scratchGVec.set(0, -this.gravity, 0);
+      _scratchDownhill.copy(_scratchGVec).addScaledVector(normal, -_scratchGVec.dot(normal));
 
       const downhillBoost = isTucking ? this.tuckBonus : 1.0;
-      this.velocity.addScaledVector(downhill, dt * downhillBoost);
+      this.velocity.addScaledVector(_scratchDownhill, dt * downhillBoost);
 
       // 2. Active Push on Flats / Gentle Slopes
       if (this.keys.forward) {
         const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
         if (horizSpeed < this.pushAccel) {
           const pushForce = (this.pushAccel - horizSpeed) * 3.5;
-          this.velocity.addScaledVector(forwardXZ, pushForce * dt);
+          this.velocity.addScaledVector(_scratchForwardXZ, pushForce * dt);
         }
       }
 
@@ -349,15 +358,15 @@ export class PlayerController {
 
       // 4. Directional Carving & Edge Grip
       // Decompose horizontal velocity into forward ski direction and lateral drift
-      const currentForwardSpeed = this.velocity.x * forwardXZ.x + this.velocity.z * forwardXZ.z;
-      const currentLateralSpeed = this.velocity.x * rightXZ.x + this.velocity.z * rightXZ.z;
+      const currentForwardSpeed = this.velocity.x * _scratchForwardXZ.x + this.velocity.z * _scratchForwardXZ.z;
+      const currentLateralSpeed = this.velocity.x * _scratchRightXZ.x + this.velocity.z * _scratchRightXZ.z;
 
       // When carving with A/D, apply deliberate lateral steering
       if (this.keys.left) {
-        this.velocity.addScaledVector(rightXZ, -18.0 * dt);
+        this.velocity.addScaledVector(_scratchRightXZ, -18.0 * dt);
       }
       if (this.keys.right) {
-        this.velocity.addScaledVector(rightXZ, 18.0 * dt);
+        this.velocity.addScaledVector(_scratchRightXZ, 18.0 * dt);
       }
 
       // Apply forward glide friction
@@ -368,8 +377,8 @@ export class PlayerController {
       const dampedLateral = currentLateralSpeed * Math.max(0, 1.0 - this.carvingGrip * dt);
 
       // Reconstruct horizontal velocity following ski orientation
-      this.velocity.x = forwardXZ.x * dampedForward + rightXZ.x * dampedLateral;
-      this.velocity.z = forwardXZ.z * dampedForward + rightXZ.z * dampedLateral;
+      this.velocity.x = _scratchForwardXZ.x * dampedForward + _scratchRightXZ.x * dampedLateral;
+      this.velocity.z = _scratchForwardXZ.z * dampedForward + _scratchRightXZ.z * dampedLateral;
 
       // 5. Ground Contact & Slope Following
       const nextX = this.position.x + this.velocity.x * dt;
@@ -418,8 +427,8 @@ export class PlayerController {
       this.velocity.z -= this.velocity.z * activeAirDrag * dt;
 
       // Aerodynamic steering during airtime (subtle yaw tilt control)
-      if (this.keys.left) this.velocity.addScaledVector(rightXZ, -8.0 * dt);
-      if (this.keys.right) this.velocity.addScaledVector(rightXZ, 8.0 * dt);
+      if (this.keys.left) this.velocity.addScaledVector(_scratchRightXZ, -8.0 * dt);
+      if (this.keys.right) this.velocity.addScaledVector(_scratchRightXZ, 8.0 * dt);
 
       // Integrate 3D flight position
       this.position.addScaledVector(this.velocity, dt);
@@ -467,17 +476,17 @@ export class PlayerController {
    * @private
    */
   _updateFlyMode(dt, forward, right) {
-    let moveDir = new THREE.Vector3();
+    _scratchMoveDir.set(0, 0, 0);
 
-    if (this.keys.forward) moveDir.add(forward);
-    if (this.keys.backward) moveDir.sub(forward);
-    if (this.keys.right) moveDir.add(right);
-    if (this.keys.left) moveDir.sub(right);
-    if (this.keys.up) moveDir.y += 1.0;
-    if (this.keys.down) moveDir.y -= 1.0;
+    if (this.keys.forward) _scratchMoveDir.add(forward);
+    if (this.keys.backward) _scratchMoveDir.sub(forward);
+    if (this.keys.right) _scratchMoveDir.add(right);
+    if (this.keys.left) _scratchMoveDir.sub(right);
+    if (this.keys.up) _scratchMoveDir.y += 1.0;
+    if (this.keys.down) _scratchMoveDir.y -= 1.0;
 
-    if (moveDir.lengthSq() > 0.0001) {
-      moveDir.normalize();
+    if (_scratchMoveDir.lengthSq() > 0.0001) {
+      _scratchMoveDir.normalize();
       const speed = this.keys.sprint ? this.flySprintSpeed : this.flySpeed;
       this.velocity.copy(moveDir.multiplyScalar(speed));
       this.position.addScaledVector(this.velocity, dt);

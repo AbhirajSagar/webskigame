@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { TerrainChunk } from './TerrainChunk.js';
 import { TerrainHeightmap } from './Noise.js';
 import { TerrainMaterialFactory } from './TerrainMaterial.js';
@@ -27,21 +28,34 @@ export class TerrainManager {
     // Active model identifier ('/models/...', 'all', etc.)
     const initialTreeModel = options.treeModel || options.treeModelPath || (TREE_MODEL_LIST.length > 0 ? TREE_MODEL_LIST[0].path : null);
 
+    // Active renderer for impostor baking
+    this.renderer = options.renderer || null;
+
     // Procedural tree generator with model preloading & caching
     this.treeGenerator = new TreeGenerator({
       seed: options.seed || 1337,
       heightmap: this.heightmap,
       treeModel: initialTreeModel,
       chunkSize: this.chunkSize,
+      renderer: this.renderer,
+      scene: this.scene,
     });
+
+    // Zero-allocation camera frustum for hierarchical tree & chunk view culling
+    this.cameraFrustum = new THREE.Frustum();
+    this.projScreenMatrix = new THREE.Matrix4();
 
     this.treeGenerator.load().then(() => {
       // Build trees on any chunks loaded prior to model finish
+      const px = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
+      const pz = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
       for (const chunk of this.loadedChunks.values()) {
-        if (!chunk.treeMesh) {
-          chunk.buildTrees(this.scene);
+        if (!chunk.treeMesh3D && !chunk.treeMeshImpostor) {
+          const dist = this._getChunkBoundaryDistance(chunk, px, pz);
+          chunk.buildTrees(this.scene, dist <= 95, dist, this.cameraFrustum);
         }
       }
+      this._updateTreeLODs(px, pz, this.cameraFrustum);
     }).catch((err) => {
       console.warn('TerrainManager tree generation disabled due to load error:', err);
     });
@@ -120,12 +134,30 @@ export class TerrainManager {
    * and builds queued chunks.
    * @param {THREE.Vector3} playerPosition
    * @param {number} [time] - Elapsed simulation time in seconds
-   * @param {THREE.Vector3} [cameraPosition] - Current active camera position
+   * @param {THREE.Camera|THREE.Vector3} [cameraOrPosition] - Current active camera (for frustum culling) or position
    */
-  update(playerPosition, time, cameraPosition) {
+  update(playerPosition, time, cameraOrPosition) {
+    let cameraPosition = playerPosition;
+    let cameraFrustum = null;
+
+    if (cameraOrPosition) {
+      if (cameraOrPosition.isCamera) {
+        cameraPosition = cameraOrPosition.position;
+        // Compute camera view frustum in place (0 runtime heap allocations)
+        this.projScreenMatrix.multiplyMatrices(
+          cameraOrPosition.projectionMatrix,
+          cameraOrPosition.matrixWorldInverse
+        );
+        this.cameraFrustum.setFromProjectionMatrix(this.projScreenMatrix);
+        cameraFrustum = this.cameraFrustum;
+      } else if (cameraOrPosition.isVector3) {
+        cameraPosition = cameraOrPosition;
+      }
+    }
+
     // 0. Update dynamic material uniforms (time, camera position for glints & drift)
     if (time !== undefined && this.materialFactory) {
-      this.materialFactory.update(time, cameraPosition || playerPosition);
+      this.materialFactory.update(time, cameraPosition);
     }
 
     const px = playerPosition.x;
@@ -142,8 +174,47 @@ export class TerrainManager {
       this._updateGrid(currentChunkX, currentChunkZ, isFirstRun);
     }
 
+    // Continuously update tree LODs, view frustum culling, and distance-culled shadows
+    this._updateTreeLODs(px, pz, cameraFrustum);
+
     // Process queued chunk builds (rate-limited per frame for smooth 60fps)
     this._processBuildQueue();
+  }
+
+  /**
+   * Distance-gates tree LODs, frustum-culls trees not in view, and manages shadow casting:
+   * - Frustum Culled: Trees not intersecting camera frustum or shadow caster bounds are set to visible = false
+   * - Near (<= 65m nearest chunk edge): Full 3D instanced conifer models
+   * - Distant (> 65m nearest chunk edge): 4-poly cross-quad billboard impostors with baked scene lighting
+   * - Shadow Culling (> 95m): Far chunks skip shadow pass completely
+   * @private
+   */
+  _updateTreeLODs(px, pz, cameraFrustum = null) {
+    const frustum = cameraFrustum || this.cameraFrustum;
+    for (const chunk of this.loadedChunks.values()) {
+      const dist = this._getChunkBoundaryDistance(chunk, px, pz);
+      chunk.updateTreeLOD(dist, frustum);
+    }
+  }
+
+  /**
+   * Computes exact Euclidean distance from a world point (px, pz) to the nearest boundary edge of a chunk.
+   * Eliminates the 32m-45m center-point offset delay so LOD switches occur at the exact intended distance.
+   * @private
+   */
+  _getChunkBoundaryDistance(chunk, px, pz) {
+    const half = chunk.size * 0.5;
+    const clampedX = Math.max(chunk.worldCenterX - half, Math.min(px, chunk.worldCenterX + half));
+    const clampedZ = Math.max(chunk.worldCenterZ - half, Math.min(pz, chunk.worldCenterZ + half));
+    return Math.hypot(clampedX - px, clampedZ - pz);
+  }
+
+  /**
+   * Backwards-compatible alias
+   * @private
+   */
+  _updateShadowCulling(px, pz) {
+    this._updateTreeLODs(px, pz);
   }
 
   _updateGrid(centerCX, centerCZ, isInitial = false) {
@@ -184,8 +255,13 @@ export class TerrainManager {
                 this.treeGenerator
               );
               this.scene.add(chunk.mesh);
+              const playerX = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
+              const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
+              const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
               if (this.treeGenerator.isLoaded) {
-                chunk.buildTrees(this.scene);
+                chunk.buildTrees(this.scene, dist <= 95, dist, this.cameraFrustum);
+              } else {
+                chunk.updateTreeLOD(dist, this.cameraFrustum);
               }
               this.loadedChunks.set(key, chunk);
             } else {
@@ -237,14 +313,55 @@ export class TerrainManager {
           );
 
           this.scene.add(chunk.mesh);
+          const playerX = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
+          const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
+          const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
           if (this.treeGenerator.isLoaded) {
-            chunk.buildTrees(this.scene);
+            chunk.buildTrees(this.scene, dist <= 95, dist, this.cameraFrustum);
+          } else {
+            chunk.updateTreeLOD(dist, this.cameraFrustum);
           }
           this.loadedChunks.set(key, chunk);
           buildsThisFrame++;
         }
       }
     }
+  }
+
+  /**
+   * Diagnostic telemetry for active vs culled tree chunks.
+   * Useful for performance profiling and validation.
+   */
+  getTreeTelemetry() {
+    let total = 0;
+    let visible3D = 0;
+    let visibleImp = 0;
+    let culled = 0;
+    let shadowCasting = 0;
+
+    for (const chunk of this.loadedChunks.values()) {
+      total++;
+      const is3D = chunk.treeMesh3D && chunk.treeMesh3D.visible;
+      const isImp = chunk.treeMeshImpostor && chunk.treeMeshImpostor.visible;
+      if (is3D) visible3D++;
+      else if (isImp) visibleImp++;
+      else culled++;
+
+      const casts3D = chunk.treeMesh3D && (chunk.treeMesh3D.castShadow || (chunk.treeMesh3D.children && chunk.treeMesh3D.children.some((c) => c.castShadow)));
+      const castsImp = chunk.treeMeshImpostor && (chunk.treeMeshImpostor.castShadow || (chunk.treeMeshImpostor.children && chunk.treeMeshImpostor.children.some((c) => c.castShadow)));
+      if (casts3D || castsImp) {
+        shadowCasting++;
+      }
+    }
+
+    return {
+      totalChunks: total,
+      visible3D,
+      visibleImp,
+      culled,
+      shadowCasting,
+      cullPercentage: total > 0 ? Math.round((culled / total) * 100) : 0,
+    };
   }
 
   /**

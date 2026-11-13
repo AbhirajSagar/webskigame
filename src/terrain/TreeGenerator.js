@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { SimplexNoise } from './Noise.js';
 import { TreeTextureFactory } from './TreeTextures.js';
+import { TreeImpostorBaker } from './TreeImpostorBaker.js';
 
 /**
  * Categorizes a model or variant filename for biome placement.
@@ -97,6 +98,50 @@ export class TreeGenerator {
   // Static memory cache: path -> Array<modelData>
   static _modelCache = new Map();
   static _textureCache = null;
+  static _materialCache = null;
+
+  /**
+   * Retrieves or instantiates shared materials across all tree models and chunks.
+   * Eliminates GPU shader switches, texture re-bindings, and uniform state changes.
+   */
+  static getSharedMaterials() {
+    if (this._materialCache) return this._materialCache;
+    const textures = TreeGenerator._textureCache || {};
+    this._materialCache = {
+      needles: new THREE.MeshStandardMaterial({
+        name: 'AlpinePineNeedles',
+        color: 0xffffff,
+        map: textures.branchDiffuse || null,
+        normalMap: textures.branchNormal || null,
+        normalScale: new THREE.Vector2(0.8, 0.8),
+        roughness: 1,
+        metalness: 0.0,
+        side: THREE.DoubleSide,
+        transparent: true,
+        alphaTest: 0.40,
+        depthWrite: true,
+      }),
+      livingBark: new THREE.MeshStandardMaterial({
+        name: 'AlpinePineTrunk',
+        color: 0xffffff,
+        map: textures.barkDiffuse || null,
+        normalMap: textures.barkNormal || null,
+        normalScale: new THREE.Vector2(1.1, 1.1),
+        roughness: 0.85,
+        metalness: 0.02,
+      }),
+      deadBark: new THREE.MeshStandardMaterial({
+        name: 'AlpineDeadBark',
+        color: 0xffffff,
+        map: textures.barkDiffuse || null,
+        normalMap: textures.barkNormal || null,
+        normalScale: new THREE.Vector2(1.1, 1.1),
+        roughness: 0.90,
+        metalness: 0.02,
+      }),
+    };
+    return this._materialCache;
+  }
 
   /**
    * @param {Object} options
@@ -118,6 +163,11 @@ export class TreeGenerator {
     this.loadedModels = [];
     this.isLoaded = false;
     this.loadPromise = null;
+
+    // Impostor baking and LOD system
+    this.renderer = options.renderer || null;
+    this.scene = options.scene || null;
+    this.impostors = new Map();
 
     // Per-tree live customizable scale and rotation bounds
     this.treeConfigs = JSON.parse(JSON.stringify(DEFAULT_TREE_CONFIGS));
@@ -294,11 +344,38 @@ export class TreeGenerator {
         }
       }
 
+      // Bake 2D cross-quad impostor billboards if WebGL renderer is available
+      if (this.renderer) {
+        this.initImpostors(this.renderer);
+      }
+
       this.isLoaded = true;
       return this;
     })();
 
     return this.loadPromise;
+  }
+
+  /**
+   * Generates or re-bakes 2D billboard impostors for all loaded tree models.
+   * @param {THREE.WebGLRenderer} [renderer]
+   * @param {THREE.Texture} [environment]
+   */
+  initImpostors(renderer, environment = null) {
+    if (renderer) this.renderer = renderer;
+    if (!this.renderer || !this.loadedModels || this.loadedModels.length === 0) return;
+
+    const env = environment || this.scene?.environment || null;
+
+    try {
+      const baker = new TreeImpostorBaker(this.renderer, { environment: env });
+      this.impostors = baker.bake(this.loadedModels, env);
+      for (const m of this.loadedModels) {
+        m.impostor = this.impostors.get(m.name) || null;
+      }
+    } catch (err) {
+      console.warn('TreeGenerator: Failed to bake tree impostors:', err);
+    }
   }
 
   /**
@@ -453,32 +530,12 @@ export class TreeGenerator {
                        matName.includes('leaves') ||
                        matName.includes('needle');
 
+      const sharedMats = TreeGenerator.getSharedMaterials();
       let mat;
       if (isBranch) {
-        mat = new THREE.MeshStandardMaterial({
-          name: 'AlpinePineNeedles',
-          color: 0xffffff,
-          map: textures.branchDiffuse || null,
-          normalMap: textures.branchNormal || null,
-          normalScale: new THREE.Vector2(0.8, 0.8),
-          roughness: 1,
-          metalness: 0.0,
-          side: THREE.DoubleSide,
-          transparent: true,
-          alphaTest: 0.40,
-          depthWrite: true,
-        });
+        mat = sharedMats.needles;
       } else {
-        // Both living tree trunks and dried/dead tree snags use the exact BarkMat_diffuse & BarkMat_normal
-        mat = new THREE.MeshStandardMaterial({
-          name: isDeadTree ? 'AlpineDeadBark' : 'AlpinePineTrunk',
-          color: 0xffffff,
-          map: textures.barkDiffuse || null,
-          normalMap: textures.barkNormal || null,
-          normalScale: new THREE.Vector2(1.1, 1.1),
-          roughness: isDeadTree ? 0.90 : 0.85,
-          metalness: 0.02,
-        });
+        mat = isDeadTree ? sharedMats.deadBark : sharedMats.livingBark;
       }
       materials.push(mat);
     });
@@ -520,17 +577,16 @@ export class TreeGenerator {
 
   /**
    * Generates environment instances for a terrain chunk.
-   * Features:
-   * - Full 360-degree Y-axis rotational diversity for each tree instance
-   * - Natural size distribution spanning from small saplings to giant conifers (~3:1 dynamic range)
-   * - Realistic alpine mountain forestry distribution with ski corridors
+   * Produces both:
+   * - mesh3D: Full high-poly 3D models for near LOD (< 75m)
+   * - meshImpostor: 4-triangle cross-quad billboard impostors with baked scene lighting for distant LOD (> 75m)
    * @param {number} chunkX
    * @param {number} chunkZ
-   * @returns {THREE.InstancedMesh|THREE.Group|null}
+   * @returns {{ mesh3D: THREE.InstancedMesh|THREE.Group|null, meshImpostor: THREE.InstancedMesh|THREE.Group|null }}
    */
-  generateChunkTreeMesh(chunkX, chunkZ) {
+  generateChunkTrees(chunkX, chunkZ) {
     if (!this.isLoaded || !this.heightmap || this.loadedModels.length === 0) {
-      return null;
+      return { mesh3D: null, meshImpostor: null };
     }
 
     const minX = chunkX * this.chunkSize;
@@ -605,21 +661,38 @@ export class TreeGenerator {
       }
     }
 
-    if (instancesByModel.size === 0) return null;
+    if (instancesByModel.size === 0) {
+      return { mesh3D: null, meshImpostor: null };
+    }
 
     const dummy = new THREE.Object3D();
-    const createdMeshes = [];
+    const createdMeshes3D = [];
+    const createdMeshesImp = [];
 
     for (const [modelData, instances] of instancesByModel.entries()) {
       if (instances.length === 0) continue;
 
-      const instMesh = new THREE.InstancedMesh(
+      // Full 3D instanced mesh
+      const instMesh3D = new THREE.InstancedMesh(
         modelData.geometry,
         modelData.materials,
         instances.length
       );
-      instMesh.userData.instances = instances;
-      instMesh.userData.modelName = modelData.name;
+      instMesh3D.userData.instances = instances;
+      instMesh3D.userData.modelName = modelData.name;
+
+      // 4-triangle cross-quad impostor instanced mesh (if baked)
+      let instMeshImp = null;
+      if (modelData.impostor) {
+        instMeshImp = new THREE.InstancedMesh(
+          modelData.impostor.geometry,
+          modelData.impostor.material,
+          instances.length
+        );
+        instMeshImp.customDepthMaterial = modelData.impostor.depthMaterial;
+        instMeshImp.userData.instances = instances;
+        instMeshImp.userData.modelName = modelData.name;
+      }
 
       const cfg = this.getTreeConfig(modelData.name);
       const minS = Math.min(cfg.minScale, cfg.maxScale);
@@ -643,31 +716,70 @@ export class TreeGenerator {
         dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
         dummy.scale.set(scale, scale, scale);
         dummy.updateMatrix();
-        instMesh.setMatrixAt(i, dummy.matrix);
+
+        instMesh3D.setMatrixAt(i, dummy.matrix);
+        if (instMeshImp) {
+          instMeshImp.setMatrixAt(i, dummy.matrix);
+        }
       }
 
-      instMesh.instanceMatrix.needsUpdate = true;
-      instMesh.computeBoundingSphere();
-      instMesh.computeBoundingBox();
-      instMesh.castShadow = true;
-      instMesh.receiveShadow = true;
+      instMesh3D.instanceMatrix.needsUpdate = true;
+      instMesh3D.computeBoundingSphere();
+      instMesh3D.computeBoundingBox();
+      instMesh3D.castShadow = true;
+      instMesh3D.receiveShadow = true;
+      createdMeshes3D.push(instMesh3D);
 
-      createdMeshes.push(instMesh);
+      if (instMeshImp) {
+        instMeshImp.instanceMatrix.needsUpdate = true;
+        instMeshImp.computeBoundingSphere();
+        instMeshImp.computeBoundingBox();
+        instMeshImp.castShadow = true;
+        instMeshImp.receiveShadow = true;
+        createdMeshesImp.push(instMeshImp);
+      }
     }
 
-    if (createdMeshes.length === 1) {
-      return createdMeshes[0];
+    let finalMesh3D = null;
+    if (createdMeshes3D.length === 1) {
+      finalMesh3D = createdMeshes3D[0];
+    } else if (createdMeshes3D.length > 1) {
+      finalMesh3D = new THREE.Group();
+      for (const mesh of createdMeshes3D) {
+        finalMesh3D.add(mesh);
+      }
     }
 
-    const group = new THREE.Group();
-    for (const mesh of createdMeshes) {
-      group.add(mesh);
+    let finalMeshImp = null;
+    if (createdMeshesImp.length === 1) {
+      finalMeshImp = createdMeshesImp[0];
+    } else if (createdMeshesImp.length > 1) {
+      finalMeshImp = new THREE.Group();
+      for (const mesh of createdMeshesImp) {
+        finalMeshImp.add(mesh);
+      }
     }
-    return group;
+
+    return {
+      mesh3D: finalMesh3D,
+      meshImpostor: finalMeshImp,
+    };
+  }
+
+  /**
+   * Backward-compatible alias returning the full 3D mesh.
+   * @param {number} chunkX
+   * @param {number} chunkZ
+   * @returns {THREE.InstancedMesh|THREE.Group|null}
+   */
+  generateChunkTreeMesh(chunkX, chunkZ) {
+    const { mesh3D } = this.generateChunkTrees(chunkX, chunkZ);
+    return mesh3D;
   }
 
   /**
    * Fast in-place matrix update of tree instances across all loaded chunks without disposing or recreating geometries.
+   * Updates BOTH 3D and 2D billboard impostors synchronously so they remain in exact lockstep.
    * Runs in < 0.2ms, enabling 60 FPS real-time transforms while dragging sliders.
    * @param {string} [targetVariant] - Optional tree variant name to restrict update to, or null for all.
    * @param {Iterable<TerrainChunk>} chunks - Active chunks to update.
@@ -677,42 +789,42 @@ export class TreeGenerator {
     const dummy = new THREE.Object3D();
 
     for (const chunk of chunks) {
-      const treeObj = chunk.treeMesh;
-      if (!treeObj) continue;
+      const treeObjects = [chunk.treeMesh3D, chunk.treeMeshImpostor].filter(Boolean);
+      for (const treeObj of treeObjects) {
+        const meshes = treeObj.isInstancedMesh ? [treeObj] : (treeObj.isGroup ? treeObj.children : []);
+        for (const instMesh of meshes) {
+          if (!instMesh || !instMesh.isInstancedMesh || !instMesh.userData.instances) continue;
+          const modelName = instMesh.userData.modelName;
+          if (targetVariant && modelName !== targetVariant) continue;
 
-      const meshes = treeObj.isInstancedMesh ? [treeObj] : (treeObj.isGroup ? treeObj.children : []);
-      for (const instMesh of meshes) {
-        if (!instMesh || !instMesh.isInstancedMesh || !instMesh.userData.instances) continue;
-        const modelName = instMesh.userData.modelName;
-        if (targetVariant && modelName !== targetVariant) continue;
+          const cfg = this.getTreeConfig(modelName);
+          const instances = instMesh.userData.instances;
 
-        const cfg = this.getTreeConfig(modelName);
-        const instances = instMesh.userData.instances;
+          const minS = Math.min(cfg.minScale, cfg.maxScale);
+          const maxS = Math.max(cfg.minScale, cfg.maxScale);
+          const minRx = Math.min(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
+          const maxRx = Math.max(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
+          const minRy = Math.min(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
+          const maxRy = Math.max(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
+          const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+          const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
 
-        const minS = Math.min(cfg.minScale, cfg.maxScale);
-        const maxS = Math.max(cfg.minScale, cfg.maxScale);
-        const minRx = Math.min(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
-        const maxRx = Math.max(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
-        const minRy = Math.min(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
-        const maxRy = Math.max(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
-        const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
-        const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+          for (let i = 0; i < instances.length; i++) {
+            const inst = instances[i];
+            const scale = minS + (maxS - minS) * inst.scaleHash;
+            const rotX = minRx + (maxRx - minRx) * inst.rotXHash;
+            const rotY = minRy + (maxRy - minRy) * inst.rotYHash;
+            const rotZ = minRz + (maxRz - minRz) * inst.rotZHash;
 
-        for (let i = 0; i < instances.length; i++) {
-          const inst = instances[i];
-          const scale = minS + (maxS - minS) * inst.scaleHash;
-          const rotX = minRx + (maxRx - minRx) * inst.rotXHash;
-          const rotY = minRy + (maxRy - minRy) * inst.rotYHash;
-          const rotZ = minRz + (maxRz - minRz) * inst.rotZHash;
+            dummy.position.set(inst.x, inst.y, inst.z);
+            dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
+            dummy.scale.set(scale, scale, scale);
+            dummy.updateMatrix();
+            instMesh.setMatrixAt(i, dummy.matrix);
+          }
 
-          dummy.position.set(inst.x, inst.y, inst.z);
-          dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
-          dummy.scale.set(scale, scale, scale);
-          dummy.updateMatrix();
-          instMesh.setMatrixAt(i, dummy.matrix);
+          instMesh.instanceMatrix.needsUpdate = true;
         }
-
-        instMesh.instanceMatrix.needsUpdate = true;
       }
     }
   }
