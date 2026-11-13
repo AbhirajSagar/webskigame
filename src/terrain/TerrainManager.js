@@ -17,7 +17,7 @@ export class TerrainManager {
     this.scene = scene;
 
     this.chunkSize = options.chunkSize || 64;
-    this.chunkSegments = options.chunkSegments || 48;
+    this.chunkSegments = options.chunkSegments || 64;
     this.renderDistance = options.renderDistance || 4; // Chunk radius
     this.maxBuildsPerFrame = options.maxBuildsPerFrame || 2;
 
@@ -25,7 +25,7 @@ export class TerrainManager {
     this.materialFactory = new TerrainMaterialFactory();
 
     // Active model identifier ('/models/...', 'all', etc.)
-    const initialTreeModel = options.treeModel || options.treeModelPath || TREE_MODEL_LIST[0].path;
+    const initialTreeModel = options.treeModel || options.treeModelPath || (TREE_MODEL_LIST.length > 0 ? TREE_MODEL_LIST[0].path : null);
 
     // Procedural tree generator with model preloading & caching
     this.treeGenerator = new TreeGenerator({
@@ -84,10 +84,18 @@ export class TerrainManager {
 
   /**
    * Main per-frame update loop.
-   * Checks player coordinates, dispatches chunk loading/unloading, and builds queued chunks.
+   * Checks player coordinates, dispatches chunk loading/unloading, updates terrain material uniforms,
+   * and builds queued chunks.
    * @param {THREE.Vector3} playerPosition
+   * @param {number} [time] - Elapsed simulation time in seconds
+   * @param {THREE.Vector3} [cameraPosition] - Current active camera position
    */
-  update(playerPosition) {
+  update(playerPosition, time, cameraPosition) {
+    // 0. Update dynamic material uniforms (time, camera position for glints & drift)
+    if (time !== undefined && this.materialFactory) {
+      this.materialFactory.update(time, cameraPosition || playerPosition);
+    }
+
     const px = playerPosition.x;
     const pz = playerPosition.z;
 

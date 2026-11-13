@@ -60,7 +60,7 @@ export class TerrainChunk {
       positionAttr.setY(i, worldY);
 
       // Continuous analytical normal (eliminates lighting seams across chunk boundaries)
-      const norm = this.heightmap.getNormal(worldX, worldZ, 0.25);
+      const norm = this.heightmap.getNormal(worldX, worldZ, 0.75);
       normalArray[i * 3 + 0] = norm.x;
       normalArray[i * 3 + 1] = norm.y;
       normalArray[i * 3 + 2] = norm.z;

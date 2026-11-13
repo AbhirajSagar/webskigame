@@ -221,9 +221,9 @@ export class TreeGenerator {
       return null;
     }
 
-    meshNode.updateMatrix();
+    rootNode.updateMatrixWorld(true);
     const geom = meshNode.geometry.clone();
-    geom.applyMatrix4(meshNode.matrix);
+    geom.applyMatrix4(meshNode.matrixWorld);
     geom.computeBoundingBox();
 
     // Center XZ at 0 and root bottom at Y=0
@@ -279,9 +279,12 @@ export class TreeGenerator {
     } else if (name.includes('darkgreen')) {
       color = new THREE.Color(0x1b3824);
       roughness = 0.76;
-    } else if (name.includes('green') || name.includes('leaves') || name.includes('needle')) {
-      color = new THREE.Color(0x2d5332);
-      roughness = 0.75;
+    } else if (name.includes('green') || name.includes('leaves') || name.includes('needle') || name.includes('leaf')) {
+      color = new THREE.Color(0x28472e);
+      roughness = 0.74;
+    } else if (name.includes('cap') || name.includes('cut')) {
+      color = new THREE.Color(0x735c42);
+      roughness = 0.82;
     } else if (name.includes('orange') || name.includes('lightorange')) {
       color = new THREE.Color(0xd96b27);
       roughness = 0.76;
@@ -290,7 +293,7 @@ export class TreeGenerator {
       roughness = 0.80;
     } else if (name.includes('wood') || name.includes('bark') || name.includes('trunk')) {
       color = new THREE.Color(0x3e2b20);
-      roughness = 0.85;
+      roughness = 0.86;
     } else if (name.includes('rock') || name.includes('stone')) {
       color = new THREE.Color(0x5a5f66);
       roughness = 0.88;
@@ -301,14 +304,22 @@ export class TreeGenerator {
       color = new THREE.Color(0xd2d8cc);
     }
 
-    return new THREE.MeshStandardMaterial({
+    const pbr = new THREE.MeshStandardMaterial({
       name: m.name || 'EnvironmentMaterial',
       color,
       roughness,
       metalness,
+      map: m.map || null,
       side: THREE.DoubleSide,
       flatShading: false,
     });
+
+    if (name.includes('leaf') || name.includes('needle') || name.includes('leaves')) {
+      pbr.alphaTest = 0.35;
+      pbr.transparent = false;
+    }
+
+    return pbr;
   }
 
   /**

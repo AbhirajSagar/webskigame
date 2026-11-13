@@ -1,7 +1,7 @@
 /**
  * Simplex Noise & Geologically Natural Terrain Height Generator
- * Generates vast plains, gentle valleys, gradual foothill ascents,
- * and realistic mountain ranges with alpine peaks.
+ * Generates vast alpine valleys, gradual foothill ascents,
+ * dramatic rocky mountain ranges, smooth arêtes, and towering peaks.
  */
 
 export class SimplexNoise {
@@ -115,6 +115,11 @@ export class SimplexNoise {
     return total / maxValue;
   }
 
+  /**
+   * C^2 Smooth Ridged Multifractal Noise
+   * Replaces sharp derivative discontinuities with smooth hyperbolic curves,
+   * eliminating normal shock jumps and polygonal sawtooth aliasing along ridges.
+   */
   ridged(x, y, octaves = 5, lacunarity = 2.0, persistence = 0.5) {
     let total = 0;
     let frequency = 1.0;
@@ -123,7 +128,9 @@ export class SimplexNoise {
     let weight = 1.0;
 
     for (let i = 0; i < octaves; i++) {
-      let signal = Math.abs(this.noise2D(x * frequency, y * frequency));
+      let raw = this.noise2D(x * frequency, y * frequency);
+      // C^2 continuous hyperbolic smoothing on the ridge cusp
+      let signal = Math.sqrt(raw * raw + 0.025);
       signal = 1.0 - signal;
       signal = signal * signal;
       signal *= weight;
@@ -146,8 +153,8 @@ function smoothstep(edge0, edge1, x) {
 
 /**
  * Natural Geological Terrain Heightmap
- * Realistic balance: broad open plains, gentle river valleys,
- * gradual foothill ascents, and high alpine mountain ranges.
+ * Realistic balance: broad open ski valleys, gradual foothill ascents,
+ * dramatic rocky mountain ranges, smooth arêtes, and towering peaks.
  */
 export class TerrainHeightmap {
   constructor(seed = 9876) {
@@ -155,71 +162,72 @@ export class TerrainHeightmap {
     this.simplexMountains = new SimplexNoise(seed + 101);
     this.simplexHills = new SimplexNoise(seed + 202);
     this.simplexWarp = new SimplexNoise(seed + 303);
+    this.simplexCrags = new SimplexNoise(seed + 404);
   }
 
   /**
    * Continuous world height function.
-   * Produces smooth, natural slopes without unnatural spikes, extrusions or seams.
+   * Produces imposing alpine mountain ranges, rocky cliffs, and smooth ski runs
+   * without unnatural spikes, kinks, or seam artifacts.
    */
   getHeight(x, z) {
-    // 1. Organic domain warp for natural meandering rivers & curved mountain chains
-    const warpScale = 0.001;
-    const warpStrength = 55.0;
+    // 1. Organic domain warp for natural meandering mountain chains and curved valleys
+    const warpScale = 0.0011;
+    const warpStrength = 65.0;
     const wx = x + warpStrength * this.simplexWarp.noise2D(x * warpScale, z * warpScale);
     const wz = z + warpStrength * this.simplexWarp.noise2D((x + 52.3) * warpScale, (z + 87.1) * warpScale);
 
-    // 2. Continental / Mountain Belt Mask (determines where plains vs mountains exist)
-    // Low frequency continental variation (wavelength ~1500m)
-    const continentalNoise = this.simplexBase.fbm(wx * 0.0006, wz * 0.0006, 3, 2.0, 0.5);
+    // 2. Continental / Mountain Belt Mask (defines where valleys vs massive mountain ranges exist)
+    const continentalNoise = this.simplexBase.fbm(wx * 0.00075, wz * 0.00075, 3, 2.0, 0.5);
     const continentalMask = (continentalNoise + 1.0) * 0.5; // [0, 1]
 
-    // 3. Vast Plains & Wide Valleys (Dominant in continentalMask < 0.45)
-    // Very gentle rolling plains (elevation variation ~4 to 8 meters)
-    const plains = this.simplexBase.fbm(wx * 0.002, wz * 0.002, 3, 2.0, 0.45) * 6.0;
+    // 3. Alpine Valley Basins & Ski Pistes (smooth flowing valleys)
+    const valley = this.simplexBase.fbm(wx * 0.0018, wz * 0.0018, 3, 2.0, 0.45) * 8.0;
 
-    // Valley / drainage depression channel
+    // Valley drainage depressions
     const valleyNoise = this.simplexBase.noise2D(wx * 0.0012 + 10.0, wz * 0.0012 + 20.0);
-    const valleyDepression = (valleyNoise * valleyNoise) * -5.0;
+    const valleyDepression = (valleyNoise * valleyNoise) * -4.0;
 
-    // 4. Foothills & Gradual Slopes (ascends smoothly from plains)
-    // Wavelength ~300m, height ~20-35m
-    const hillWeight = smoothstep(0.30, 0.60, continentalMask);
-    const hills = this.simplexHills.fbm(wx * 0.003, wz * 0.003, 4, 2.0, 0.48) * 32.0;
+    // 4. Foothills & Mountain Shoulders
+    const hillWeight = smoothstep(0.24, 0.55, continentalMask);
+    const hills = this.simplexHills.fbm(wx * 0.0028, wz * 0.0028, 4, 2.0, 0.48) * 36.0;
 
-    // 5. Alpine Mountains & Sharp Peaks (Dominant in continentalMask > 0.55)
-    // Mountain mask with smooth ascent threshold
-    const mountainWeight = smoothstep(0.48, 0.80, continentalMask);
+    // 5. Alpine Mountains, Rocky Cirques & Towering Peaks
+    const mountainWeight = smoothstep(0.38, 0.82, continentalMask);
 
-    // Ridged noise creates geological mountain chains and sharp ridges
-    const ridge1 = this.simplexMountains.ridged(wx * 0.0025, wz * 0.0025, 5, 2.1, 0.52);
-    // Secondary billow layer for mountain mass and natural shoulder slopes
-    const billow = Math.abs(this.simplexMountains.noise2D(wx * 0.0018 + 45.0, wz * 0.0018 + 72.0));
-    
-    // Non-linear elevation shaping: peaks rise dramatically from their shoulders
-    const shapedRidge = Math.pow(ridge1, 1.6) * 1.3;
-    const mountainHeight = (shapedRidge * 80.0 + billow * 35.0);
+    // Primary knife-edge ridged noise with C^2 smooth crests
+    const ridge1 = this.simplexMountains.ridged(wx * 0.0020, wz * 0.0020, 5, 2.1, 0.55);
+    // Secondary ridged layer for rock outcroppings & crags
+    const ridge2 = this.simplexMountains.ridged(wx * 0.0045, wz * 0.0045, 4, 2.0, 0.50);
+    // Smooth billow layer for massive mountain body
+    const rawBillow = this.simplexMountains.noise2D(wx * 0.0015 + 45.0, wz * 0.0015 + 72.0);
+    const billow = Math.sqrt(rawBillow * rawBillow + 0.02);
 
-    // 6. Natural Synthesis & Layering
-    // Base elevation of plains and valleys
-    let elevation = plains + valleyDepression;
+    // Non-linear elevation shaping: peaks soar dramatically above their shoulders
+    const shapedRidge = Math.pow(ridge1, 1.40) * 1.20;
+    const mountainMass = (shapedRidge * 120.0 + ridge2 * 32.0 + billow * 40.0);
 
-    // Gradual rise into foothills
+    // 6. Smooth Geological Crags (subtle rock shelves without high-frequency derivative noise)
+    const cragNoise = this.simplexCrags.noise2D(wx * 0.006, wz * 0.006);
+    const rockyCrags = cragNoise * 3.5;
+
+    // 7. Synthesis & Layering
+    let elevation = valley + valleyDepression;
     elevation += hills * hillWeight;
+    elevation += (mountainMass + rockyCrags) * mountainWeight;
 
-    // Ascent into mountain ranges and high peaks
-    elevation += mountainHeight * mountainWeight;
-
-    // 7. Subtle surface micro-undulation (smooth, zero jagged artifacts)
-    const micro = this.simplexBase.noise2D(wx * 0.012, wz * 0.012) * 0.6;
+    // Subtle surface micro-undulation for snow surface relief
+    const micro = this.simplexBase.noise2D(wx * 0.012, wz * 0.012) * 0.4;
 
     return elevation + micro;
   }
 
   /**
    * Continuous analytical finite-difference normal.
-   * Guarantees 100% seamless lighting and shading across chunk borders.
+   * Uses epsilon=0.75m to band-limit derivatives to the mesh grid spacing,
+   * eliminating sub-grid derivative oscillation and polygon sawtooth aliasing.
    */
-  getNormal(x, z, epsilon = 0.25) {
+  getNormal(x, z, epsilon = 0.75) {
     const hL = this.getHeight(x - epsilon, z);
     const hR = this.getHeight(x + epsilon, z);
     const hD = this.getHeight(x, z - epsilon);
