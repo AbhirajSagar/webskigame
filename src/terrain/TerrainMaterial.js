@@ -6,31 +6,31 @@ import * as THREE from 'three';
  */
 export const DEFAULT_SNOW_CONFIG = {
   // Chromatic Snow Palette
-  sunlitColor: '#fffef9',
-  shadowColor: '#bad6f7',
-  creviceColor: '#8cb0db',
+  sunlitColor: '#c2c2c2',
+  shadowColor: '#519bf0',
+  creviceColor: '#3b444e',
 
   // Slope & Wind Scour
   slopeMin: 0.42,
   slopeMax: 0.76,
-  peakScourStart: 72.0,
-  peakScourEnd: 125.0,
+  peakScourStart: 92,
+  peakScourEnd: 125,
   peakScourIntensity: 0.36,
 
   // Surface & Roughness
-  snowNormalScale: 2.0,
-  snowRoughness: 0.80,
+  snowNormalScale: 3.2,
+  snowRoughness: 0.8,
 
   // Crystal Sparkles
-  sparkleScale: 2.85,
-  sparkleIntensity: 1.8,
-  sparkleDistance: 48.0,
+  sparkleScale: 2.8,
+  sparkleIntensity: 1.1,
+  sparkleDistance: 48,
 
   // SSS & Glancing Sheen
-  sssIntensity: 0.38,
-  sssColor: '#ffe0bd',
-  sheenIntensity: 0.20,
-  sheenColor: '#d9ebff',
+  sssIntensity: 0.68,
+  sssColor: '#f9c58b',
+  sheenIntensity: 0.2,
+  sheenColor: '#ffffff',
 };
 
 /**
@@ -90,7 +90,7 @@ export class TerrainMaterialFactory {
       uSnowNormalScale: { value: this.snowConfig.snowNormalScale },
       uTime: { value: 0.0 },
       uCameraPosition: { value: new THREE.Vector3() },
-      uSunDirection: { value: new THREE.Vector3(160, 220, 110).normalize() },
+      uSunDirection: { value: new THREE.Vector3(130, 190, 90).normalize() },
 
       // Snow Dynamic Uniforms (Real-time tweakable)
       uSunlitSnowColor: { value: new THREE.Color(this.snowConfig.sunlitColor) },

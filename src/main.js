@@ -3,7 +3,6 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { FpsCounter } from './perf/FpsCounter.js';
-import { TreeConfigUI } from './ui/TreeConfigUI.js';
 import './style.css';
 
 // --- Scene Setup ---
@@ -34,13 +33,33 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
+// Enable soft real-time dynamic shadow mapping
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
 // --- Lighting & HDRI Skybox ---
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
 scene.add(ambientLight);
 
-const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.6);
-sunLight.position.set(160, 220, 110);
+const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.8);
+sunLight.position.set(130, 190, 90);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.width = 2048;
+sunLight.shadow.mapSize.height = 2048;
+sunLight.shadow.camera.near = 10;
+sunLight.shadow.camera.far = 420;
+
+// High-resolution shadow frustum surrounding the skiing player
+const shadowCoverage = 90;
+sunLight.shadow.camera.left = -shadowCoverage;
+sunLight.shadow.camera.right = shadowCoverage;
+sunLight.shadow.camera.top = shadowCoverage;
+sunLight.shadow.camera.bottom = -shadowCoverage;
+sunLight.shadow.bias = -0.0003;
+sunLight.shadow.normalBias = 0.04;
+
 scene.add(sunLight);
+scene.add(sunLight.target);
 
 // Skybox & IBL
 const rgbeLoader = new RGBELoader();
@@ -77,9 +96,6 @@ window.__GAME = { scene, camera, player, terrainManager };
 // --- High-Performance FPS & Telemetry Counter (Top Left) ---
 const fpsCounter = new FpsCounter();
 
-// --- Live Interactive Tree Configuration UI (Top Right / [T] key) ---
-const treeConfigUI = new TreeConfigUI(terrainManager);
-
 // --- Window Resize Listener ---
 window.addEventListener('resize', () => {
   const width = window.innerWidth;
@@ -103,6 +119,12 @@ function animate() {
 
   // 1. Update player physics & camera
   player.update(delta);
+
+  // Center sun shadow frustum on player for continuous tree shadows while skiing
+  const sunOffset = new THREE.Vector3(130, 190, 90);
+  sunLight.position.copy(player.position).add(sunOffset);
+  sunLight.target.position.copy(player.position);
+  sunLight.target.updateMatrixWorld();
 
   // 2. Stream procedural chunks around player position & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, camera.position);
