@@ -31,6 +31,12 @@ export const DEFAULT_SNOW_CONFIG = {
   sssColor: '#f9c58b',
   sheenIntensity: 0.2,
   sheenColor: '#ffffff',
+
+  // Emerald Frozen Lake Ice
+  lakeDeepColor: '#012e24',
+  lakeMidColor: '#059669',
+  lakeBrightColor: '#10b981',
+  lakeFrostColor: '#6ee7b7',
 };
 
 /**
@@ -109,6 +115,12 @@ export class TerrainMaterialFactory {
       uSSSColor: { value: new THREE.Color(this.snowConfig.sssColor) },
       uSheenIntensity: { value: this.snowConfig.sheenIntensity },
       uSheenColor: { value: new THREE.Color(this.snowConfig.sheenColor) },
+
+      // Emerald Lake Ice Uniforms
+      uLakeDeepColor: { value: new THREE.Color(this.snowConfig.lakeDeepColor) },
+      uLakeMidColor: { value: new THREE.Color(this.snowConfig.lakeMidColor) },
+      uLakeBrightColor: { value: new THREE.Color(this.snowConfig.lakeBrightColor) },
+      uLakeFrostColor: { value: new THREE.Color(this.snowConfig.lakeFrostColor) },
     };
 
     this.sharedMaterial = new THREE.MeshStandardMaterial({
@@ -146,6 +158,11 @@ export class TerrainMaterialFactory {
       shader.uniforms.uSSSColor = this.uniforms.uSSSColor;
       shader.uniforms.uSheenIntensity = this.uniforms.uSheenIntensity;
       shader.uniforms.uSheenColor = this.uniforms.uSheenColor;
+
+      shader.uniforms.uLakeDeepColor = this.uniforms.uLakeDeepColor;
+      shader.uniforms.uLakeMidColor = this.uniforms.uLakeMidColor;
+      shader.uniforms.uLakeBrightColor = this.uniforms.uLakeBrightColor;
+      shader.uniforms.uLakeFrostColor = this.uniforms.uLakeFrostColor;
 
       // Pass world position and normal from vertex shader
       shader.vertexShader = `
@@ -193,6 +210,12 @@ export class TerrainMaterialFactory {
         uniform float uSheenIntensity;
         uniform vec3 uSheenColor;
 
+        // Emerald Lake Ice Uniforms
+        uniform vec3 uLakeDeepColor;
+        uniform vec3 uLakeMidColor;
+        uniform vec3 uLakeBrightColor;
+        uniform vec3 uLakeFrostColor;
+
         varying vec3 vCustomWorldPos;
         varying vec3 vCustomWorldNorm;
 
@@ -202,12 +225,86 @@ export class TerrainMaterialFactory {
         vec3 g_blending;
         float g_roughX, g_roughY, g_roughZ;
         vec3 g_nX, g_nY, g_nZ;
+        float g_lakeFactor;
+        float g_lakeDepth;
+        vec3 g_lakeIceColor;
 
         // 2D Rotation Helper
         vec2 rotateUV(vec2 uv, float angle) {
           float s = sin(angle);
           float c = cos(angle);
           return mat2(c, -s, s, c) * uv;
+        }
+
+        // Deterministic Cellular Lake Query for Emerald Ice
+        vec2 lakeHash2(vec2 p) {
+          p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+          return fract(sin(p) * 43758.5453123);
+        }
+
+        void computeLakeIce(vec2 posXZ, out float outFactor, out float outDepth, out vec3 outColor) {
+          float cellSize = 380.0;
+          vec2 cellCoord = floor(posXZ / cellSize);
+          float maxFactor = 0.0;
+          float lakeCenterDist = 999.0;
+
+          for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+              vec2 cell = cellCoord + vec2(float(dx), float(dz));
+              vec2 h1 = lakeHash2(cell);
+              vec2 h2 = lakeHash2(cell + vec2(53.1, 91.7));
+
+              if (h1.x < 0.45) {
+                vec2 lakePos = (cell + vec2(0.2 + 0.6 * h1.y, 0.2 + 0.6 * h2.x)) * cellSize;
+                float radius = 60.0 + 35.0 * h2.y;
+                float shoreWidth = 24.0;
+
+                float warp = sin(posXZ.x * 0.045 + posXZ.y * 0.035) * 8.0 + cos(posXZ.x * 0.02 - posXZ.y * 0.05) * 10.0;
+                float d = length(posXZ - lakePos) + warp;
+
+                if (d < radius + shoreWidth) {
+                  float f = clamp((radius + shoreWidth - d) / shoreWidth, 0.0, 1.0);
+                  if (f > maxFactor) {
+                    maxFactor = f;
+                    lakeCenterDist = d / (radius + shoreWidth);
+                  }
+                }
+              }
+            }
+          }
+
+          outFactor = maxFactor;
+          outDepth = clamp(1.0 - lakeCenterDist, 0.0, 1.0);
+
+          if (maxFactor > 0.001) {
+            // Deep crystalline ice veins & fractures
+            vec2 crackUV1 = posXZ * 0.12;
+            vec2 crackUV2 = rotateUV(posXZ * 0.22, 0.785) + vec2(5.7, 12.3);
+            float crack1 = abs(sin(crackUV1.x + cos(crackUV1.y * 1.5)) * sin(crackUV1.y + sin(crackUV1.x * 1.5)));
+            float crack2 = abs(sin(crackUV2.x * 1.2 + cos(crackUV2.y * 1.7)) * cos(crackUV2.y * 1.3 - sin(crackUV2.x * 0.9)));
+            float cracks = smoothstep(0.06, 0.0, crack1) * 0.55 + smoothstep(0.04, 0.0, crack2) * 0.35;
+
+            // Emerald palette:
+            // Deep crystalline abyss (#012e24) -> Glowing jewel emerald (#059669) -> Turquoise shine (#10b981) -> Mint frost (#6ee7b7)
+            vec3 deepEmerald = uLakeDeepColor;
+            vec3 midEmerald = uLakeMidColor;
+            vec3 brightEmerald = uLakeBrightColor;
+            vec3 frostRim = uLakeFrostColor;
+
+            // Depth color blend
+            vec3 baseIce = mix(brightEmerald, midEmerald, smoothstep(0.15, 0.60, outDepth));
+            baseIce = mix(baseIce, deepEmerald, smoothstep(0.55, 0.95, outDepth));
+
+            // Internal crystalline hairline crack reflection (bright cyan-white)
+            vec3 crackColor = vec3(0.55, 0.95, 0.85);
+            baseIce += crackColor * cracks * (0.35 + 0.40 * outDepth);
+
+            // Shoreline frost rim
+            vec3 iceColor = mix(frostRim, baseIce, smoothstep(0.08, 0.40, maxFactor));
+            outColor = iceColor;
+          } else {
+            outColor = vec3(0.0);
+          }
         }
 
         // Fast domain warp
@@ -366,11 +463,25 @@ export class TerrainMaterialFactory {
         vec3 ambientSnowColor = mix(shadowSnowColor, creviceSnowColor, snowCrevice * 0.35);
         vec3 dynamicSnowAlbedo = mix(ambientSnowColor, sunlitSnowColor, sunExposure * 0.65 + 0.35);
 
-        diffuseColor.rgb = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
+        vec3 terrainColor = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
+
+        // =========================================================================
+        // 4. FROZEN LAKE EMERALD ICE
+        // =========================================================================
+        float lakeFactor = 0.0;
+        float lakeDepth = 0.0;
+        vec3 lakeColor = vec3(0.0);
+        computeLakeIce(vCustomWorldPos.xz, lakeFactor, lakeDepth, lakeColor);
+        g_lakeFactor = lakeFactor;
+        g_lakeDepth = lakeDepth;
+        g_lakeIceColor = lakeColor;
+
+        float iceBlend = smoothstep(0.08, 0.40, lakeFactor);
+        diffuseColor.rgb = mix(terrainColor, lakeColor, iceBlend);
         `
       );
 
-      // 2. Roughness modulation
+      // 2. Roughness modulation (Glassy mirror reflection on frozen emerald lake ice)
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <roughnessmap_fragment>',
         `
@@ -379,12 +490,27 @@ export class TerrainMaterialFactory {
         float rockRoughness = g_roughX * g_blending.x + g_roughY * g_blending.y + g_roughZ * g_blending.z;
         float snowSlope = 1.0 - clamp(vCustomWorldNorm.y, 0.0, 1.0);
         float snowRoughness = mix(uSnowRoughness, uSnowRoughness * 0.74, snowSlope * 0.7);
+        float terrainRoughness = mix(rockRoughness * 0.90 + 0.10, snowRoughness, g_snowFactor);
 
-        roughnessFactor = mix(rockRoughness * 0.90 + 0.10, snowRoughness, g_snowFactor);
+        // Ultra-low roughness (0.025) for mirror-like sky & mountain reflections on emerald lake ice
+        float iceRoughness = 0.025;
+        float iceRoughBlend = smoothstep(0.10, 0.45, g_lakeFactor);
+        roughnessFactor = mix(terrainRoughness, iceRoughness, iceRoughBlend);
         `
       );
 
-      // 3. Normal mapping with early-gated rock reconstruction
+      // 3. Metalness modulation (Boost specular reflection intensity on emerald ice)
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <metalnessmap_fragment>',
+        `
+        #include <metalnessmap_fragment>
+
+        float iceMetalBlend = smoothstep(0.12, 0.48, g_lakeFactor);
+        metalnessFactor = mix(metalnessFactor, 0.12, iceMetalBlend);
+        `
+      );
+
+      // 4. Normal mapping with early-gated rock reconstruction and horizontal lake ice
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <normal_fragment_maps>',
         `
@@ -438,10 +564,22 @@ export class TerrainMaterialFactory {
         } else {
           normal = viewSnowN;
         }
+
+        // On lake ice: align normal to horizontal view-space vertical with subtle micro-frost ripples
+        if (g_lakeFactor > 0.05) {
+          vec2 rippleUV = vCustomWorldPos.xz * 0.35;
+          float rip1 = sin(rippleUV.x * 2.5 + rippleUV.y * 1.8);
+          float rip2 = cos(rippleUV.x * 1.2 - rippleUV.y * 2.8);
+          vec2 icePerturb = vec2(rip1, rip2) * 0.015;
+          vec3 worldIceN = normalize(vec3(icePerturb.x, 1.0, icePerturb.y));
+          vec3 viewIceN = normalize((viewMatrix * vec4(worldIceN, 0.0)).xyz);
+          float iceNormBlend = smoothstep(0.12, 0.50, g_lakeFactor);
+          normal = normalize(mix(normal, viewIceN, iceNormBlend));
+        }
         `
       );
 
-      // 4. Dynamic illumination: Ice Crystal Glints, SSS Translucency & Glancing Sheen
+      // 5. Dynamic illumination: Ice Crystal Glints, Emerald Glancing Sheen & Sun Glare
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <opaque_fragment>',
         `
@@ -468,6 +606,31 @@ export class TerrainMaterialFactory {
           vec3 sheenGlow = uSheenColor * fresnel * uSheenIntensity;
 
           outgoingLight += (sparkleColor + sssGlow + sheenGlow) * g_snowFactor;
+        }
+
+        // Frozen Emerald Lake: Sharp Sun Glint, Luminous Fresnel Sheen & Subsurface Green Glow
+        if (g_lakeFactor > 0.05) {
+          vec3 V = normalize(uCameraPosition - vCustomWorldPos);
+          vec3 L = normalize(uSunDirection);
+          vec3 H = normalize(L + V);
+          vec3 worldUp = vec3(0.0, 1.0, 0.0);
+
+          // Direct sun specular glint on mirror ice
+          float NdotH = max(0.0, dot(worldUp, H));
+          float iceSpecular = pow(NdotH, 220.0) * 3.5;
+          vec3 sunSpecGlint = vec3(1.0, 0.98, 0.92) * iceSpecular;
+
+          // Grazing angle Fresnel sheen (luminous emerald glow at glancing angles)
+          float NdotV = max(0.0, dot(worldUp, V));
+          float fresnel = pow(1.0 - NdotV, 3.8);
+          vec3 emeraldSheen = mix(uLakeBrightColor, vec3(0.4, 1.0, 0.8), 0.4) * fresnel * 1.4;
+
+          // Subsurface crystalline emerald glow
+          float sssIce = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) * (0.35 * g_lakeDepth);
+          vec3 iceSSS = uLakeBrightColor * sssIce;
+
+          float iceEffectBlend = smoothstep(0.12, 0.55, g_lakeFactor);
+          outgoingLight += (sunSpecGlint + emeraldSheen + iceSSS) * iceEffectBlend;
         }
 
         #include <opaque_fragment>
@@ -534,6 +697,18 @@ export class TerrainMaterialFactory {
         break;
       case 'sheenColor':
         this.uniforms.uSheenColor.value.set(value);
+        break;
+      case 'lakeDeepColor':
+        this.uniforms.uLakeDeepColor.value.set(value);
+        break;
+      case 'lakeMidColor':
+        this.uniforms.uLakeMidColor.value.set(value);
+        break;
+      case 'lakeBrightColor':
+        this.uniforms.uLakeBrightColor.value.set(value);
+        break;
+      case 'lakeFrostColor':
+        this.uniforms.uLakeFrostColor.value.set(value);
         break;
     }
   }

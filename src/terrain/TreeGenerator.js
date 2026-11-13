@@ -618,6 +618,12 @@ export class TreeGenerator {
         // 1. Keep immediate spawn area clear so player can start cleanly
         if (Math.hypot(wx, wz) < 16.0) continue;
 
+        // Keep frozen lake ice and shorelines clear of trees
+        if (this.heightmap.getLakeData) {
+          const lake = this.heightmap.getLakeData(wx, wz);
+          if (lake.factor > 0.20) continue;
+        }
+
         // 2. Elevation bounds: trees do not grow on high glacial peaks or submerged valleys
         const wy = this.heightmap.getHeight(wx, wz);
         if (wy > 65.0 || wy < -12.0) continue;

@@ -83,16 +83,17 @@ export class PlayerController {
     // Base camera FOV
     this.baseFov = camera.fov || 65;
 
-    // Input state
+    // Input state: Only forward (W) and boost (Shift) are active
     this.keys = {
       forward: false,
-      backward: false,
-      left: false,
-      right: false,
-      up: false,
-      down: false,
       sprint: false,
     };
+
+    // Touch controls state
+    this.leftTouchIds = new Set();
+    this.rightTouchId = null;
+    this.prevRightX = 0;
+    this.prevRightY = 0;
 
     this.onModeChange = null;
 
@@ -131,6 +132,107 @@ export class PlayerController {
     });
 
     window.addEventListener('mousemove', (e) => this._onMouseMove(e));
+
+    // Touch controls for mobile / tablet devices
+    this._initTouchControls();
+  }
+
+  /**
+   * Touch controls:
+   * - Left half of screen: Press and hold = Accelerate (W)
+   * - Right half of screen: Touch swipe / drag = Camera view axis rotation (yaw & pitch)
+   * - Shift boost: Triggered via on-screen Boost button, 2-finger touch on left, or keyboard Shift
+   */
+  _initTouchControls() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+    const onTouchStart = (e) => {
+      if (e.cancelable) e.preventDefault();
+
+      const halfWidth = window.innerWidth * 0.5;
+
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+
+        if (touch.clientX < halfWidth) {
+          // Left half: Accelerate / W
+          this.leftTouchIds.add(touch.identifier);
+        } else {
+          // Right half: Camera rotation
+          if (this.rightTouchId === null) {
+            this.rightTouchId = touch.identifier;
+            this.prevRightX = touch.clientX;
+            this.prevRightY = touch.clientY;
+          }
+        }
+      }
+
+      this._updateTouchState();
+    };
+
+    const onTouchMove = (e) => {
+      if (e.cancelable) e.preventDefault();
+
+      const sensitivity = 0.0035;
+
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+
+        if (touch.identifier === this.rightTouchId) {
+          const dx = touch.clientX - this.prevRightX;
+          const dy = touch.clientY - this.prevRightY;
+          this.prevRightX = touch.clientX;
+          this.prevRightY = touch.clientY;
+
+          this.yaw -= dx * sensitivity;
+          this.pitch -= dy * sensitivity;
+
+          const maxPitch = Math.PI / 2 - 0.05;
+          this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
+
+          this._updateCameraRotation();
+        }
+      }
+    };
+
+    const onTouchEnd = (e) => {
+      if (e.cancelable) e.preventDefault();
+
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+
+        if (this.leftTouchIds.has(touch.identifier)) {
+          this.leftTouchIds.delete(touch.identifier);
+        }
+
+        if (touch.identifier === this.rightTouchId) {
+          this.rightTouchId = null;
+          // If another touch is already on the right half, pick it up
+          for (let j = 0; j < e.touches.length; j++) {
+            const t = e.touches[j];
+            if (t.clientX >= window.innerWidth * 0.5 && !this.leftTouchIds.has(t.identifier)) {
+              this.rightTouchId = t.identifier;
+              this.prevRightX = t.clientX;
+              this.prevRightY = t.clientY;
+              break;
+            }
+          }
+        }
+      }
+
+      this._updateTouchState();
+    };
+
+    this.domElement.addEventListener('touchstart', onTouchStart, { passive: false });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd, { passive: false });
+    window.addEventListener('touchcancel', onTouchEnd, { passive: false });
+  }
+
+  _updateTouchState() {
+    const leftCount = this.leftTouchIds.size;
+    this.keys.forward = leftCount > 0;
+    this.keys.sprint = leftCount >= 2;
   }
 
   _onKeyDown(e) {
@@ -139,44 +241,9 @@ export class PlayerController {
       case 'ArrowUp':
         this.keys.forward = true;
         break;
-      case 'KeyS':
-      case 'ArrowDown':
-        this.keys.backward = true;
-        break;
-      case 'KeyA':
-      case 'ArrowLeft':
-        this.keys.left = true;
-        break;
-      case 'KeyD':
-      case 'ArrowRight':
-        this.keys.right = true;
-        break;
-      case 'Space':
-        if (this.mode === 'ski' && this.isGrounded) {
-          // Add jump pop impulse off the slope
-          const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z);
-          this.velocity.y += this.jumpForce * Math.max(0.6, normal.y);
-          this.velocity.x += normal.x * (this.jumpForce * 0.4);
-          this.velocity.z += normal.z * (this.jumpForce * 0.4);
-          this.isGrounded = false;
-          this.airTime = 0.05;
-        } else if (this.mode === 'fly') {
-          this.keys.up = true;
-        }
-        break;
-      case 'KeyE':
-        this.keys.up = true;
-        break;
-      case 'KeyC':
-      case 'KeyQ':
-        this.keys.down = true;
-        break;
       case 'ShiftLeft':
       case 'ShiftRight':
         this.keys.sprint = true;
-        break;
-      case 'KeyF':
-        this.toggleMode();
         break;
     }
   }
@@ -186,26 +253,6 @@ export class PlayerController {
       case 'KeyW':
       case 'ArrowUp':
         this.keys.forward = false;
-        break;
-      case 'KeyS':
-      case 'ArrowDown':
-        this.keys.backward = false;
-        break;
-      case 'KeyA':
-      case 'ArrowLeft':
-        this.keys.left = false;
-        break;
-      case 'KeyD':
-      case 'ArrowRight':
-        this.keys.right = false;
-        break;
-      case 'Space':
-      case 'KeyE':
-        this.keys.up = false;
-        break;
-      case 'KeyC':
-      case 'KeyQ':
-        this.keys.down = false;
         break;
       case 'ShiftLeft':
       case 'ShiftRight':
@@ -320,8 +367,8 @@ export class PlayerController {
     if (_scratchRightXZ.lengthSq() > 0.0001) _scratchRightXZ.normalize();
     else _scratchRightXZ.set(1, 0, 0);
 
-    const isTucking = this.keys.forward || this.keys.sprint;
-    const isBraking = this.keys.backward;
+    const isBoosting = this.keys.sprint;
+    const isAccelerating = this.keys.forward || isBoosting;
 
     const currentGroundHeight = this.terrainManager.getHeightAt(this.position.x, this.position.z);
     const targetEyeY = currentGroundHeight + this.eyeHeight;
@@ -334,10 +381,10 @@ export class PlayerController {
       _scratchGVec.set(0, -this.gravity, 0);
       _scratchDownhill.copy(_scratchGVec).addScaledVector(normal, -_scratchGVec.dot(normal));
 
-      const downhillBoost = isTucking ? this.tuckBonus : 1.0;
+      const downhillBoost = isBoosting ? this.tuckBonus * 1.5 : (this.keys.forward ? this.tuckBonus : 1.0);
       this.velocity.addScaledVector(_scratchDownhill, dt * downhillBoost);
 
-      // 2. Active Push on Flats / Gentle Slopes
+      // 2. Active Push on Flats / Gentle Slopes (W or Left-Side Touch Hold)
       if (this.keys.forward) {
         const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
         if (horizSpeed < this.pushAccel) {
@@ -346,14 +393,10 @@ export class PlayerController {
         }
       }
 
-      // 3. Hockey-Stop / Snowplow Braking
-      if (isBraking) {
-        const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-        if (horizSpeed > 0.1) {
-          const brakeAmount = Math.min(horizSpeed, this.brakePower * dt);
-          this.velocity.x -= (this.velocity.x / horizSpeed) * brakeAmount;
-          this.velocity.z -= (this.velocity.z / horizSpeed) * brakeAmount;
-        }
+      // 3. Shift Boost Propulsion
+      if (isBoosting) {
+        const boostPower = 28.0;
+        this.velocity.addScaledVector(_scratchForwardXZ, boostPower * dt);
       }
 
       // 4. Directional Carving & Edge Grip
@@ -361,20 +404,20 @@ export class PlayerController {
       const currentForwardSpeed = this.velocity.x * _scratchForwardXZ.x + this.velocity.z * _scratchForwardXZ.z;
       const currentLateralSpeed = this.velocity.x * _scratchRightXZ.x + this.velocity.z * _scratchRightXZ.z;
 
-      // When carving with A/D, apply deliberate lateral steering
-      if (this.keys.left) {
-        this.velocity.addScaledVector(_scratchRightXZ, -18.0 * dt);
-      }
-      if (this.keys.right) {
-        this.velocity.addScaledVector(_scratchRightXZ, 18.0 * dt);
-      }
+      // Detect frozen lake ice surface
+      const lakeData = this.terrainManager.heightmap?.getLakeData ? this.terrainManager.heightmap.getLakeData(this.position.x, this.position.z) : null;
+      const isOnIce = lakeData && lakeData.isFrozenLake;
 
-      // Apply forward glide friction
-      const frictionRate = isTucking ? this.snowFriction * 0.5 : this.snowFriction;
+      // Apply forward glide friction (reduced on glassy frozen lake ice)
+      let frictionRate = isAccelerating ? this.snowFriction * 0.5 : this.snowFriction;
+      if (isOnIce) {
+        frictionRate *= 0.22; // Ultra-slick emerald ice glide
+      }
       const dampedForward = currentForwardSpeed * Math.max(0, 1.0 - frictionRate * dt);
 
-      // Skis carve into the snow: high lateral resistance prevents ice-skating drift
-      const dampedLateral = currentLateralSpeed * Math.max(0, 1.0 - this.carvingGrip * dt);
+      // Skis carve smoothly into the turn aligned with camera view
+      const grip = isOnIce ? this.carvingGrip * 0.65 : this.carvingGrip;
+      const dampedLateral = currentLateralSpeed * Math.max(0, 1.0 - grip * dt);
 
       // Reconstruct horizontal velocity following ski orientation
       this.velocity.x = _scratchForwardXZ.x * dampedForward + _scratchRightXZ.x * dampedLateral;
@@ -422,13 +465,14 @@ export class PlayerController {
       this.velocity.y -= this.gravity * dt;
 
       // Aerodynamic air resistance
-      const activeAirDrag = isTucking ? this.tuckAirDrag : this.airDrag;
+      const activeAirDrag = isAccelerating ? this.tuckAirDrag : this.airDrag;
       this.velocity.x -= this.velocity.x * activeAirDrag * dt;
       this.velocity.z -= this.velocity.z * activeAirDrag * dt;
 
-      // Aerodynamic steering during airtime (subtle yaw tilt control)
-      if (this.keys.left) this.velocity.addScaledVector(_scratchRightXZ, -8.0 * dt);
-      if (this.keys.right) this.velocity.addScaledVector(_scratchRightXZ, 8.0 * dt);
+      if (isBoosting) {
+        // Boost drives forward during flight as well
+        this.velocity.addScaledVector(_scratchForwardXZ, 12.0 * dt);
+      }
 
       // Integrate 3D flight position
       this.position.addScaledVector(this.velocity, dt);
@@ -479,16 +523,11 @@ export class PlayerController {
     _scratchMoveDir.set(0, 0, 0);
 
     if (this.keys.forward) _scratchMoveDir.add(forward);
-    if (this.keys.backward) _scratchMoveDir.sub(forward);
-    if (this.keys.right) _scratchMoveDir.add(right);
-    if (this.keys.left) _scratchMoveDir.sub(right);
-    if (this.keys.up) _scratchMoveDir.y += 1.0;
-    if (this.keys.down) _scratchMoveDir.y -= 1.0;
 
     if (_scratchMoveDir.lengthSq() > 0.0001) {
       _scratchMoveDir.normalize();
       const speed = this.keys.sprint ? this.flySprintSpeed : this.flySpeed;
-      this.velocity.copy(moveDir.multiplyScalar(speed));
+      this.velocity.copy(_scratchMoveDir.multiplyScalar(speed));
       this.position.addScaledVector(this.velocity, dt);
     } else {
       this.velocity.set(0, 0, 0);

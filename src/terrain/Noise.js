@@ -219,7 +219,76 @@ export class TerrainHeightmap {
     // Subtle surface micro-undulation for snow surface relief
     const micro = this.simplexBase.noise2D(wx * 0.012, wz * 0.012) * 0.4;
 
-    return elevation + micro;
+    // 8. Frozen Alpine Lake Basins
+    const lake = this.getLakeData(x, z);
+    if (lake.factor > 0.0) {
+      // Smoothly carve and level the valley basin down to the flat frozen ice sheet
+      const flatT = smoothstep(0.0, 0.65, lake.factor);
+      elevation = elevation * (1.0 - flatT) + lake.elevation * flatT;
+    }
+
+    // Ice sheets are mirror-flat without micro snow bumps
+    const microWeight = 1.0 - smoothstep(0.15, 0.55, lake.factor);
+    return elevation + micro * microWeight;
+  }
+
+  /**
+   * Deterministic cellular query for frozen alpine lake basins.
+   * Matches GLSL shader implementation to maintain 100% elevation, normal, and visual alignment.
+   * @param {number} x
+   * @param {number} z
+   * @returns {{ factor: number, elevation: number, isFrozenLake: boolean }}
+   */
+  getLakeData(x, z) {
+    const cellSize = 380.0;
+    const cx = Math.floor(x / cellSize);
+    const cz = Math.floor(z / cellSize);
+
+    let maxFactor = 0.0;
+    let lakeElevation = 0.0;
+    let isFrozenLake = false;
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const cellX = cx + dx;
+        const cellZ = cz + dz;
+
+        const h1x = Math.sin(cellX * 127.1 + cellZ * 311.7) * 43758.5453;
+        const h1y = Math.sin(cellX * 269.5 + cellZ * 183.3) * 43758.5453;
+        const h1_x = h1x - Math.floor(h1x);
+        const h1_y = h1y - Math.floor(h1y);
+
+        const h2x = Math.sin((cellX + 53.1) * 127.1 + (cellZ + 91.7) * 311.7) * 43758.5453;
+        const h2y = Math.sin((cellX + 53.1) * 269.5 + (cellZ + 91.7) * 183.3) * 43758.5453;
+        const h2_x = h2x - Math.floor(h2x);
+        const h2_y = h2y - Math.floor(h2y);
+
+        // 45% of cells form frozen alpine lakes
+        if (h1_x < 0.45) {
+          const lakeX = (cellX + 0.2 + 0.6 * h1_y) * cellSize;
+          const lakeZ = (cellZ + 0.2 + 0.6 * h2_x) * cellSize;
+          const radius = 60.0 + 35.0 * h2_y;
+          const shoreWidth = 24.0;
+          const elev = -10.0 + 14.0 * h1_x;
+
+          const warp = Math.sin(x * 0.045 + z * 0.035) * 8.0 + Math.cos(x * 0.02 - z * 0.05) * 10.0;
+          const dist = Math.hypot(x - lakeX, z - lakeZ) + warp;
+
+          if (dist < radius + shoreWidth) {
+            const factor = Math.max(0.0, Math.min(1.0, (radius + shoreWidth - dist) / shoreWidth));
+            if (factor > maxFactor) {
+              maxFactor = factor;
+              lakeElevation = elev;
+              if (factor > 0.35) {
+                isFrozenLake = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return { factor: maxFactor, elevation: lakeElevation, isFrozenLake };
   }
 
   /**
@@ -228,6 +297,12 @@ export class TerrainHeightmap {
    * eliminating sub-grid derivative oscillation and polygon sawtooth aliasing.
    */
   getNormal(x, z, epsilon = 0.75) {
+    const lake = this.getLakeData(x, z);
+    if (lake.factor > 0.65) {
+      // Ice sheet is completely horizontal (zero slope)
+      return { x: 0.0, y: 1.0, z: 0.0 };
+    }
+
     const hL = this.getHeight(x - epsilon, z);
     const hR = this.getHeight(x + epsilon, z);
     const hD = this.getHeight(x, z - epsilon);
