@@ -3,6 +3,7 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { StatsMonitor } from './perf/StatsMonitor.js';
+import { TreeSelectorUI } from './ui/TreeSelectorUI.js';
 import './style.css';
 
 // --- Scene Setup ---
@@ -33,7 +34,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
 // --- Lighting & HDRI Skybox ---
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
 scene.add(ambientLight);
 
 const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.6);
@@ -56,13 +57,18 @@ rgbeLoader.load(
   }
 );
 
-// --- Modular Procedural Terrain System ---
+// Read URL query parameter if present (?model=... or ?tree=...)
+const urlParams = new URLSearchParams(window.location.search);
+const selectedModel = urlParams.get('model') || urlParams.get('tree') || null;
+
+// --- Modular Procedural Terrain System with Multi-Layer Environment Generation ---
 const terrainManager = new TerrainManager(scene, {
   chunkSize: 64,         // World units per chunk
   chunkSegments: 48,     // Smooth geometric resolution
   renderDistance: 5,     // Expanded view distance for landscape vista
   maxBuildsPerFrame: 2,  // Smooth frame pacing
   seed: 4812,
+  treeModel: selectedModel, // Ready for replacement models
 });
 
 // --- Player Controller ---
@@ -70,6 +76,9 @@ const player = new PlayerController(camera, canvas, terrainManager);
 
 // --- Performance Monitor (FPS + JS Heap) ---
 const statsMonitor = new StatsMonitor();
+
+// --- Interactive Environment Status Overlay ---
+new TreeSelectorUI(terrainManager, selectedModel);
 
 // --- Window Resize Listener ---
 window.addEventListener('resize', () => {

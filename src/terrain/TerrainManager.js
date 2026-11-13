@@ -1,11 +1,12 @@
 import { TerrainChunk } from './TerrainChunk.js';
 import { TerrainHeightmap } from './Noise.js';
 import { TerrainMaterialFactory } from './TerrainMaterial.js';
+import { TreeGenerator, TREE_MODEL_LIST } from './TreeGenerator.js';
 
 /**
  * TerrainManager
  * Handles dynamic streaming of procedural chunks around player position.
- * Features asynchronous phased chunk generation to avoid frame hitching.
+ * Features asynchronous phased chunk generation and seeded noise-based tree distribution.
  */
 export class TerrainManager {
   /**
@@ -23,6 +24,28 @@ export class TerrainManager {
     this.heightmap = new TerrainHeightmap(options.seed || 1337);
     this.materialFactory = new TerrainMaterialFactory();
 
+    // Active model identifier ('/models/...', 'all', etc.)
+    const initialTreeModel = options.treeModel || options.treeModelPath || TREE_MODEL_LIST[0].path;
+
+    // Procedural tree generator with model preloading & caching
+    this.treeGenerator = new TreeGenerator({
+      seed: options.seed || 1337,
+      heightmap: this.heightmap,
+      treeModel: initialTreeModel,
+      chunkSize: this.chunkSize,
+    });
+
+    this.treeGenerator.load().then(() => {
+      // Build trees on any chunks loaded prior to model finish
+      for (const chunk of this.loadedChunks.values()) {
+        if (!chunk.treeMesh) {
+          chunk.buildTrees(this.scene);
+        }
+      }
+    }).catch((err) => {
+      console.warn('TerrainManager tree generation disabled due to load error:', err);
+    });
+
     // Map of active chunks: key "${chunkX},${chunkZ}" -> TerrainChunk
     this.loadedChunks = new Map();
 
@@ -32,6 +55,27 @@ export class TerrainManager {
 
     this.lastPlayerChunkX = null;
     this.lastPlayerChunkZ = null;
+  }
+
+  /**
+   * Dynamically switches the tree model across the entire world on the fly.
+   * @param {string|number} modelSelection
+   */
+  async setTreeModel(modelSelection) {
+    await this.treeGenerator.setModel(modelSelection);
+
+    // Rebuild trees for all currently active chunks
+    for (const chunk of this.loadedChunks.values()) {
+      chunk.rebuildTrees(this.scene);
+    }
+  }
+
+  getCurrentTreeModel() {
+    return this.treeGenerator.modelSelection;
+  }
+
+  getTreeModelList() {
+    return TREE_MODEL_LIST;
   }
 
   _chunkKey(cx, cz) {
@@ -96,9 +140,13 @@ export class TerrainManager {
                 this.chunkSize,
                 this.chunkSegments,
                 this.heightmap,
-                this.materialFactory
+                this.materialFactory,
+                this.treeGenerator
               );
               this.scene.add(chunk.mesh);
+              if (this.treeGenerator.isLoaded) {
+                chunk.buildTrees(this.scene);
+              }
               this.loadedChunks.set(key, chunk);
             } else {
               needed.push({ cx, cz, distSq });
@@ -144,10 +192,14 @@ export class TerrainManager {
             this.chunkSize,
             this.chunkSegments,
             this.heightmap,
-            this.materialFactory
+            this.materialFactory,
+            this.treeGenerator
           );
 
           this.scene.add(chunk.mesh);
+          if (this.treeGenerator.isLoaded) {
+            chunk.buildTrees(this.scene);
+          }
           this.loadedChunks.set(key, chunk);
           buildsThisFrame++;
         }
