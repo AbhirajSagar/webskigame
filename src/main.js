@@ -100,6 +100,7 @@ const skyboxPromise = new Promise((resolve) => {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       scene.background = texture;
       scene.environment = texture;
+      boardScene.environment = texture;
       skyboxTexture = texture;
 
       // Refresh impostor billboard lighting with full HDRI environment once loaded
@@ -128,8 +129,26 @@ const terrainManager = new TerrainManager(scene, {
   renderer,              // WebGLRenderer for offscreen impostor baking & GPU features
 });
 
+// --- Secondary Overlay Scene & Camera for Snowboard (Stacked Viewmodel Pass) ---
+const boardScene = new THREE.Scene();
+const secondaryCamera = new THREE.PerspectiveCamera(
+  camera.fov,
+  window.innerWidth / window.innerHeight,
+  0.05,
+  1000
+);
+
+// Board scene lighting matching primary scene sun and ambient
+const boardAmbientLight = new THREE.AmbientLight(0xffffff, 0.6);
+boardScene.add(boardAmbientLight);
+
+const boardSunLight = new THREE.DirectionalLight(0xfff5e6, 1.8);
+boardSunLight.position.set(130, 190, 90);
+boardScene.add(boardSunLight);
+boardScene.add(boardSunLight.target);
+
 // --- Player Controller ---
-const player = new PlayerController(camera, canvas, terrainManager);
+const player = new PlayerController(camera, canvas, terrainManager, boardScene);
 
 // Expose handle for runtime telemetry
 window.__GAME = { scene, camera, renderer, player, terrainManager };
@@ -137,12 +156,15 @@ window.__GAME = { scene, camera, renderer, player, terrainManager };
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
 
-// Coordinate asset loading: wait until skybox, tree pack models, and textures finish
+// Snowboard model loading promise
+const boardPromise = player.snowboard.load();
+
+// Coordinate asset loading: wait until skybox, tree pack models, board, and textures finish
 const MAX_LOAD_TIMEOUT = 12000;
 const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
 
 Promise.race([
-  Promise.all([skyboxPromise, treesPromise]),
+  Promise.all([skyboxPromise, treesPromise, boardPromise]),
   timeoutPromise
 ]).then(() => {
   // If skybox loaded, ensure tree impostors have environment reflection
@@ -175,6 +197,9 @@ window.addEventListener('resize', () => {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
 
+  secondaryCamera.aspect = width / height;
+  secondaryCamera.updateProjectionMatrix();
+
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
 });
@@ -190,6 +215,9 @@ const shadowTexelSize = (2 * shadowCoverage) / 512;
 
 // Pre-warm WebGL shader pipelines to prevent initial frame compilation hitch
 renderer.compile(scene, camera);
+if (player.snowboard?.isLoaded) {
+  renderer.compile(boardScene, secondaryCamera);
+}
 
 function animate() 
 {
@@ -223,10 +251,35 @@ function animate()
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, camera);
 
-  // 3. Render scene
+  // 3. Render primary world scene as it is
+  renderer.autoClear = true;
   renderer.render(scene, camera);
 
-  // 4. Update FPS & Ski / Flight Telemetry
+  // 4. Render secondary camera on top of the primary camera (stacked overlay pass)
+  if (player.mode === 'ski' && player.snowboard?.isLoaded) {
+    // Keep secondary camera locked to primary camera in position, rotation, scale, FOV, and projection
+    secondaryCamera.position.copy(camera.position);
+    secondaryCamera.quaternion.copy(camera.quaternion);
+    secondaryCamera.scale.copy(camera.scale);
+    secondaryCamera.fov = camera.fov;
+    secondaryCamera.aspect = camera.aspect;
+    secondaryCamera.near = camera.near;
+    secondaryCamera.far = camera.far;
+    secondaryCamera.updateProjectionMatrix();
+
+    // Sync board lighting with sun direction
+    boardSunLight.position.copy(sunLight.position);
+    boardSunLight.target.position.copy(sunLight.target.position);
+    boardSunLight.target.updateMatrixWorld();
+
+    // Stacked render: clear only the depth buffer and render boardScene on top of primary camera
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(boardScene, secondaryCamera);
+    renderer.autoClear = true;
+  }
+
+  // 5. Update FPS & Ski / Flight Telemetry
   fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode);
 }
 

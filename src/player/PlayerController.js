@@ -37,11 +37,13 @@ export class PlayerController {
    * @param {THREE.Camera} camera
    * @param {HTMLElement} domElement
    * @param {TerrainManager} terrainManager
+   * @param {THREE.Scene} [boardScene=null]
    */
-  constructor(camera, domElement, terrainManager) {
+  constructor(camera, domElement, terrainManager, boardScene = null) {
     this.camera = camera;
     this.domElement = domElement;
     this.terrainManager = terrainManager;
+    this.boardScene = boardScene || this.terrainManager?.scene;
 
     // Physical state
     this.position = new THREE.Vector3(0, 20, 0);
@@ -77,15 +79,17 @@ export class PlayerController {
     // Orientation (aimed down the mountain slope toward the forest vista)
     this.yaw = 1.35;
     this.pitch = -0.05;
-    this.minPitch = -75 * (Math.PI / 180); // Clamp looking down to max 75 degrees
-    this.maxPitch = 85 * (Math.PI / 180);  // Allow looking up towards sky and peaks
+    this.minPitch = -60 * (Math.PI / 180); // Clamped looking down to max 60 degrees
+    this.maxPitch = 77 * (Math.PI / 180);  // Clamped looking up to max 77 degrees
     this.isPointerLocked = false;
     this.isDragging = false;
     this.prevMouseX = 0;
     this.prevMouseY = 0;
 
-    // Base camera FOV
+    // Dynamic Camera FOV parameters (bounded between minFov and maxFov)
     this.baseFov = camera.fov || 65;
+    this.minFov = 60;
+    this.maxFov = 92;
 
     // Camera shake state (light, subtle grounded tremor on landing)
     this.trauma = 0.0;
@@ -114,8 +118,8 @@ export class PlayerController {
 
     this.onModeChange = null;
 
-    // Grounded snowboard rig aligned with terrain surface normal
-    this.snowboard = new Snowboard(this.terrainManager?.scene);
+    // Grounded snowboard rig aligned with terrain surface normal (rendered in boardScene)
+    this.snowboard = new Snowboard(this.boardScene);
 
     this._initInput();
 
@@ -348,7 +352,7 @@ export class PlayerController {
       return;
     }
 
-    // Clamp pitch: max 75 degrees looking down, 85 degrees looking up
+    // Clamp pitch: max 60 degrees looking down, 77 degrees looking up
     this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
 
     this._updateCameraRotation();
@@ -359,6 +363,37 @@ export class PlayerController {
     _scratchEuler.y = this.yaw;
     _scratchEuler.z = 0;
     this.camera.quaternion.setFromEuler(_scratchEuler);
+  }
+
+  /**
+   * Sets vertical camera pitch limits dynamically in degrees.
+   * @param {number} minPitchDeg - Looking down boundary (negative degrees, e.g. -75)
+   * @param {number} maxPitchDeg - Looking up boundary (positive degrees, e.g. +85)
+   */
+  setPitchLimits(minPitchDeg, maxPitchDeg) {
+    this.minPitch = minPitchDeg * (Math.PI / 180);
+    this.maxPitch = maxPitchDeg * (Math.PI / 180);
+    this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
+    this._updateCameraRotation();
+  }
+
+  /**
+   * Returns current pitch clamp boundaries in degrees.
+   * @returns {{ minPitchDeg: number, maxPitchDeg: number }}
+   */
+  getPitchLimitsDeg() {
+    return {
+      minPitchDeg: Math.round(this.minPitch * (180 / Math.PI)),
+      maxPitchDeg: Math.round(this.maxPitch * (180 / Math.PI)),
+    };
+  }
+
+  /**
+   * Returns current camera pitch in degrees.
+   * @returns {number}
+   */
+  getPitchDeg() {
+    return Math.round(this.pitch * (180 / Math.PI) * 10) / 10;
   }
 
   toggleMode() {
@@ -462,18 +497,46 @@ export class PlayerController {
       // Camera orientation
       this._updateCameraRotation();
 
+      // Dynamic Speed & Altitude FOV: expands with velocity and height above snow, strictly bounded
       const safeSpeed = Number.isFinite(this.speed) ? this.speed : 0;
-      const targetFov = this.baseFov + Math.min(12, (safeSpeed / 45.0) * 12);
-      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 4.0, dt);
+      const currentGroundH = this.terrainManager?.getHeightAt
+        ? this.terrainManager.getHeightAt(this.position.x, this.position.z)
+        : (this.position.y - this.eyeHeight);
+      const altitude = Math.max(0, this.position.y - (currentGroundH + this.eyeHeight));
+      const safeAltitude = Number.isFinite(altitude) ? altitude : 0;
+
+      // 1. Speed factor: up to +15° (fully scaled at 45 m/s = 162 km/h)
+      const speedRatio = Math.min(1.0, safeSpeed / 45.0);
+      const speedBonus = (1.0 - Math.pow(1.0 - speedRatio, 2)) * 15.0;
+
+      // 2. Altitude factor: up to +14° (scaled across 0m to 35m airtime)
+      const altRatio = Math.min(1.0, safeAltitude / 35.0);
+      const altBonus = Math.sqrt(altRatio) * 14.0;
+
+      // 3. Strictly bounded target FOV
+      const targetFov = Math.min(this.maxFov, Math.max(this.minFov, this.baseFov + speedBonus + altBonus));
+      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 3.8, dt);
       this.camera.updateProjectionMatrix();
     } else {
       this.camera.position.copy(this.position);
       this._updateCameraRotation();
 
-      if (Math.abs(this.camera.fov - this.baseFov) > 0.01) {
-        this.camera.fov = THREE.MathUtils.damp(this.camera.fov, this.baseFov, 6.0, dt);
-        this.camera.updateProjectionMatrix();
-      }
+      // Dynamic Speed & Altitude FOV in Fly spectator mode
+      const safeFlySpeed = Number.isFinite(this.speed) ? this.speed : 0;
+      const currentGroundH = this.terrainManager?.getHeightAt
+        ? this.terrainManager.getHeightAt(this.position.x, this.position.z)
+        : 0;
+      const altitude = Math.max(0, this.position.y - currentGroundH);
+      const safeAltitude = Number.isFinite(altitude) ? altitude : 0;
+
+      const flySpeedRatio = Math.min(1.0, safeFlySpeed / this.flySprintSpeed);
+      const flySpeedBonus = flySpeedRatio * 15.0;
+      const flyAltRatio = Math.min(1.0, safeAltitude / 80.0);
+      const flyAltBonus = Math.sqrt(flyAltRatio) * 14.0;
+
+      const flyTargetFov = Math.min(this.maxFov, Math.max(this.minFov, this.baseFov + flySpeedBonus + flyAltBonus));
+      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, flyTargetFov, 4.0, dt);
+      this.camera.updateProjectionMatrix();
     }
 
     // Keep snowboard positioned on ground with terrain surface normal alignment

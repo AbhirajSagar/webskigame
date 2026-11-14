@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import fs from 'fs';
+import path from 'path';
 
 export default defineConfig({
   server: {
@@ -7,6 +8,39 @@ export default defineConfig({
     host: true,
   },
   plugins: [
+    {
+      name: 'watch-public-assets',
+      configureServer(server) {
+        // Watch the public directory (models, textures, etc.) for changes
+        const publicDir = path.resolve('public');
+        server.watcher.add(publicDir);
+
+        const reloadBrowser = (filePath) => {
+          console.log(`[vite] Asset changed in public: ${filePath} -> reloading browser`);
+          server.ws.send({
+            type: 'full-reload',
+            path: '*'
+          });
+        };
+
+        server.watcher.on('change', (file) => {
+          if (file.includes('public')) reloadBrowser(file);
+        });
+        server.watcher.on('add', (file) => {
+          if (file.includes('public')) reloadBrowser(file);
+        });
+
+        // Disable caching for 3D model files during development
+        server.middlewares.use((req, res, next) => {
+          if (req.url && (req.url.includes('/models/') || req.url.includes('.fbx') || req.url.includes('.gltf') || req.url.includes('.glb'))) {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+          }
+          next();
+        });
+      }
+    },
     {
       name: 'log-collector',
       configureServer(server) {

@@ -252,10 +252,11 @@ export class TreeGenerator {
       });
     };
 
-    const [barkDiff, barkNorm, branchDiff, branchNorm] = await Promise.all([
+    const [barkDiff, barkNorm, branchDiffGreen, branchDiffOrange, branchNorm] = await Promise.all([
       loadTex('/textures/BarkMat_diffuse.png', true, 1, 1),
       loadTex('/textures/BarkMat_normal.png', false, 1, 1),
-      loadTex('/textures/BranchMat_diffuse.png', true, 1, 1),
+      loadTex('/textures/BranchMat_diffuse_green.png', true, 1, 1),
+      loadTex('/textures/BranchMat_diffuse_orange.png', true, 1, 1),
       loadTex('/textures/BranchMat_normal.png', false, 1, 1),
     ]);
 
@@ -264,7 +265,7 @@ export class TreeGenerator {
     TreeGenerator._textureCache = {
       barkDiffuse: barkDiff || proc.barkDiffuse,
       barkNormal: barkNorm || proc.barkNormal,
-      branchDiffuse: branchDiff || proc.branchDiffuse,
+      branchDiffuse: Math.random() < 0.5 ? branchDiffGreen : branchDiffOrange || proc.branchDiffuse,
       branchNormal: branchNorm || proc.branchNormal,
     };
 
