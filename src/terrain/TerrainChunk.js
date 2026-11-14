@@ -68,7 +68,9 @@ export class TerrainChunk {
     const stride = this.segments + 1;
     const step = this.size / this.segments;
 
-    // Pass 1: Compute heights and elevation bounds (single heightmap call per vertex)
+    const lakeDataArray = new Float32Array(vertexCount * 2);
+
+    // Pass 1: Compute heights, lake factors and elevation bounds
     for (let i = 0; i < vertexCount; i++) {
       const localX = positionAttr.getX(i);
       const localZ = positionAttr.getZ(i);
@@ -78,6 +80,12 @@ export class TerrainChunk {
 
       const worldY = this.heightmap.getHeight(worldX, worldZ);
       positionAttr.setY(i, worldY);
+
+      if (this.heightmap.getLakeData) {
+        const lake = this.heightmap.getLakeData(worldX, worldZ);
+        lakeDataArray[i * 2 + 0] = lake.factor;
+        lakeDataArray[i * 2 + 1] = lake.depth;
+      }
 
       if (worldY < minY) minY = worldY;
       if (worldY > maxY) maxY = worldY;
@@ -121,6 +129,7 @@ export class TerrainChunk {
 
     positionAttr.needsUpdate = true;
     geometry.setAttribute('normal', new THREE.BufferAttribute(normalArray, 3));
+    geometry.setAttribute('aLakeData', new THREE.BufferAttribute(lakeDataArray, 2));
 
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();

@@ -4,7 +4,32 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { FpsCounter } from './perf/FpsCounter.js';
+import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import './style.css';
+
+// --- Loading Overlay Manager ---
+const loadingOverlay = new LoadingOverlay();
+
+let loadedItemsCount = 0;
+let estimatedTotalItems = 11;
+
+THREE.DefaultLoadingManager.onStart = (url, itemsLoaded, itemsTotal) => {
+  estimatedTotalItems = Math.max(estimatedTotalItems, itemsTotal);
+  loadedItemsCount = itemsLoaded;
+  const pct = Math.min(88, Math.round((loadedItemsCount / estimatedTotalItems) * 90));
+  loadingOverlay.setProgress(pct);
+};
+
+THREE.DefaultLoadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
+  estimatedTotalItems = Math.max(estimatedTotalItems, itemsTotal);
+  loadedItemsCount = itemsLoaded;
+  const pct = Math.min(88, Math.round((loadedItemsCount / estimatedTotalItems) * 90));
+  loadingOverlay.setProgress(pct);
+};
+
+THREE.DefaultLoadingManager.onError = (url) => {
+  console.warn('Asset loading error:', url);
+};
 
 // --- Scene Setup ---
 const scene = new THREE.Scene();
@@ -66,25 +91,31 @@ scene.add(sunLight);
 scene.add(sunLight.target);
 
 // Skybox & IBL
-const rgbeLoader = new RGBELoader();
-rgbeLoader.load(
-  '/kloppenheim_06_puresky_2k.hdr',
-  (texture) => {
-    texture.mapping = THREE.EquirectangularReflectionMapping;
-    scene.background = texture;
-    scene.environment = texture;
+let skyboxTexture = null;
+const skyboxPromise = new Promise((resolve) => {
+  const rgbeLoader = new RGBELoader();
+  rgbeLoader.load(
+    '/kloppenheim_06_puresky_2k.hdr',
+    (texture) => {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      scene.background = texture;
+      scene.environment = texture;
+      skyboxTexture = texture;
 
-    // Refresh impostor billboard lighting with full HDRI environment once loaded
-    if (terrainManager?.treeGenerator?.isLoaded) {
-      terrainManager.treeGenerator.initImpostors(renderer, texture);
+      // Refresh impostor billboard lighting with full HDRI environment once loaded
+      if (terrainManager?.treeGenerator?.isLoaded) {
+        terrainManager.treeGenerator.initImpostors(renderer, texture);
+      }
+      resolve(texture);
+    },
+    undefined,
+    (err) => {
+      console.error('Failed to load skybox HDRI:', err);
+      scene.background = fogColor;
+      resolve(null);
     }
-  },
-  undefined,
-  (err) => {
-    console.error('Failed to load skybox HDRI:', err);
-    scene.background = fogColor;
-  }
-);
+  );
+});
 
 // --- Modular Procedural Terrain System with Mountains and Rock Texturing ---
 const terrainManager = new TerrainManager(scene, {
@@ -102,6 +133,36 @@ const player = new PlayerController(camera, canvas, terrainManager);
 
 // Expose handle for runtime telemetry
 window.__GAME = { scene, camera, renderer, player, terrainManager };
+
+// Trees and vegetation loading promise from TerrainManager
+const treesPromise = terrainManager.treeGenerator.load();
+
+// Coordinate asset loading: wait until skybox, tree pack models, and textures finish
+const MAX_LOAD_TIMEOUT = 12000;
+const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
+
+Promise.race([
+  Promise.all([skyboxPromise, treesPromise]),
+  timeoutPromise
+]).then(() => {
+  // If skybox loaded, ensure tree impostors have environment reflection
+  if (skyboxTexture && terrainManager?.treeGenerator?.isLoaded) {
+    terrainManager.treeGenerator.initImpostors(renderer, skyboxTexture);
+  }
+
+  // Pre-generate immediate terrain chunks and compile WebGL shaders
+  terrainManager.update(player.position, 0, camera);
+  renderer.compile(scene, camera);
+  renderer.render(scene, camera);
+
+  // Transition loading overlay to reveal Play button
+  loadingOverlay.setReady();
+});
+
+// Launch downhill ski run when user clicks Play button (fullscreen is handled inside loadingOverlay)
+loadingOverlay.onPlay(() => {
+  player.start();
+});
 
 // --- High-Performance FPS & Telemetry Counter (Top Left) ---
 const fpsCounter = new FpsCounter();
@@ -165,8 +226,8 @@ function animate() {
   // 3. Render scene
   renderer.render(scene, camera);
 
-  // 4. Update FPS & Ski Telemetry
-  fpsCounter.update(player.getSpeedKmh(), player.isAirborne());
+  // 4. Update FPS & Ski / Flight Telemetry
+  fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode);
 }
 
 animate();

@@ -108,6 +108,18 @@ export class TerrainManager {
     return TREE_MODEL_LIST;
   }
 
+  setLakeProperty(key, value) {
+    this.materialFactory.setLakeProperty(key, value);
+  }
+
+  getLakeConfig() {
+    return this.materialFactory.getLakeConfig();
+  }
+
+  resetLakeConfig() {
+    this.materialFactory.resetLakeConfig();
+  }
+
   getSnowConfig() {
     return this.materialFactory.getSnowConfig();
   }

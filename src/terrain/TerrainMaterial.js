@@ -31,12 +31,36 @@ export const DEFAULT_SNOW_CONFIG = {
   sssColor: '#f9c58b',
   sheenIntensity: 0.2,
   sheenColor: '#ffffff',
+};
 
-  // Emerald Frozen Lake Ice
-  lakeDeepColor: '#012e24',
-  lakeMidColor: '#059669',
-  lakeBrightColor: '#10b981',
-  lakeFrostColor: '#6ee7b7',
+/**
+ * Default Frozen Lake Material Config
+ * Hardcoded PBR glacial ice parameters.
+ */
+export const DEFAULT_LAKE_CONFIG = {
+  // Glacial Cyan Lake Colors
+  lakeDeepColor: '#006680',
+  lakeMidColor: '#118992',
+  lakeBrightColor: '#1096b7',
+  lakeFrostColor: '#72e4b6',
+  lakeCrackColor: '#90fef7',
+
+  // Surface & Lighting Optics
+  lakeRoughness: 0,
+  lakeMetalness: 0.74,
+  lakeSpecular: 0.2,
+  lakeGlintPower: 640,
+  lakeFresnel: 0,
+  lakeFresnelPower: 2,
+  lakeSSS: 0,
+
+  // Cracks & Noise Patchiness
+  lakeCrackScale: 0.22,
+  lakeCrackIntensity: 0.1,
+  lakeCrackWidth: 0.032,
+  lakeNoiseScale: 0.022,
+  lakeNoiseThreshold: 0.43,
+  lakeNormalRipples: 0.022,
 };
 
 /**
@@ -84,7 +108,15 @@ export class TerrainMaterialFactory {
     this.snowNormalMap.wrapS = THREE.RepeatWrapping;
     this.snowNormalMap.wrapT = THREE.RepeatWrapping;
 
+    // 3. Lake Noise Map for organic crack alpha distribution
+    this.lakeNoiseMap = textureLoader.load('/textures/lake_noise.png');
+    this.lakeNoiseMap.wrapS = THREE.RepeatWrapping;
+    this.lakeNoiseMap.wrapT = THREE.RepeatWrapping;
+    this.lakeNoiseMap.minFilter = THREE.LinearMipmapLinearFilter;
+    this.lakeNoiseMap.magFilter = THREE.LinearFilter;
+
     this.snowConfig = { ...DEFAULT_SNOW_CONFIG };
+    this.lakeConfig = { ...DEFAULT_LAKE_CONFIG };
 
     // Dynamic Shader Uniforms
     this.uniforms = {
@@ -94,6 +126,7 @@ export class TerrainMaterialFactory {
       uRockAOMap: { value: this.rockAOMap },
       uSnowNormalMap: { value: this.snowNormalMap },
       uSnowNormalScale: { value: this.snowConfig.snowNormalScale },
+      uLakeNoiseMap: { value: this.lakeNoiseMap },
       uTime: { value: 0.0 },
       uCameraPosition: { value: new THREE.Vector3() },
       uSunDirection: { value: new THREE.Vector3(130, 190, 90).normalize() },
@@ -116,11 +149,25 @@ export class TerrainMaterialFactory {
       uSheenIntensity: { value: this.snowConfig.sheenIntensity },
       uSheenColor: { value: new THREE.Color(this.snowConfig.sheenColor) },
 
-      // Emerald Lake Ice Uniforms
-      uLakeDeepColor: { value: new THREE.Color(this.snowConfig.lakeDeepColor) },
-      uLakeMidColor: { value: new THREE.Color(this.snowConfig.lakeMidColor) },
-      uLakeBrightColor: { value: new THREE.Color(this.snowConfig.lakeBrightColor) },
-      uLakeFrostColor: { value: new THREE.Color(this.snowConfig.lakeFrostColor) },
+      // Emerald Lake Ice Uniforms (Live tweakable via LakeMaterialUI)
+      uLakeDeepColor: { value: new THREE.Color(this.lakeConfig.lakeDeepColor) },
+      uLakeMidColor: { value: new THREE.Color(this.lakeConfig.lakeMidColor) },
+      uLakeBrightColor: { value: new THREE.Color(this.lakeConfig.lakeBrightColor) },
+      uLakeFrostColor: { value: new THREE.Color(this.lakeConfig.lakeFrostColor) },
+      uLakeCrackColor: { value: new THREE.Color(this.lakeConfig.lakeCrackColor) },
+      uLakeRoughness: { value: this.lakeConfig.lakeRoughness },
+      uLakeMetalness: { value: this.lakeConfig.lakeMetalness },
+      uLakeSpecular: { value: this.lakeConfig.lakeSpecular },
+      uLakeGlintPower: { value: this.lakeConfig.lakeGlintPower },
+      uLakeFresnel: { value: this.lakeConfig.lakeFresnel },
+      uLakeFresnelPower: { value: this.lakeConfig.lakeFresnelPower },
+      uLakeSSS: { value: this.lakeConfig.lakeSSS },
+      uLakeCrackScale: { value: this.lakeConfig.lakeCrackScale },
+      uLakeCrackIntensity: { value: this.lakeConfig.lakeCrackIntensity },
+      uLakeCrackWidth: { value: this.lakeConfig.lakeCrackWidth },
+      uLakeNoiseScale: { value: this.lakeConfig.lakeNoiseScale },
+      uLakeNoiseThreshold: { value: this.lakeConfig.lakeNoiseThreshold },
+      uLakeNormalRipples: { value: this.lakeConfig.lakeNormalRipples },
     };
 
     this.sharedMaterial = new THREE.MeshStandardMaterial({
@@ -163,9 +210,26 @@ export class TerrainMaterialFactory {
       shader.uniforms.uLakeMidColor = this.uniforms.uLakeMidColor;
       shader.uniforms.uLakeBrightColor = this.uniforms.uLakeBrightColor;
       shader.uniforms.uLakeFrostColor = this.uniforms.uLakeFrostColor;
+      shader.uniforms.uLakeCrackColor = this.uniforms.uLakeCrackColor;
+      shader.uniforms.uLakeRoughness = this.uniforms.uLakeRoughness;
+      shader.uniforms.uLakeMetalness = this.uniforms.uLakeMetalness;
+      shader.uniforms.uLakeSpecular = this.uniforms.uLakeSpecular;
+      shader.uniforms.uLakeGlintPower = this.uniforms.uLakeGlintPower;
+      shader.uniforms.uLakeFresnel = this.uniforms.uLakeFresnel;
+      shader.uniforms.uLakeFresnelPower = this.uniforms.uLakeFresnelPower;
+      shader.uniforms.uLakeSSS = this.uniforms.uLakeSSS;
+      shader.uniforms.uLakeCrackScale = this.uniforms.uLakeCrackScale;
+      shader.uniforms.uLakeCrackIntensity = this.uniforms.uLakeCrackIntensity;
+      shader.uniforms.uLakeCrackWidth = this.uniforms.uLakeCrackWidth;
+      shader.uniforms.uLakeNoiseScale = this.uniforms.uLakeNoiseScale;
+      shader.uniforms.uLakeNoiseThreshold = this.uniforms.uLakeNoiseThreshold;
+      shader.uniforms.uLakeNormalRipples = this.uniforms.uLakeNormalRipples;
+      shader.uniforms.uLakeNoiseMap = this.uniforms.uLakeNoiseMap;
 
-      // Pass world position and normal from vertex shader
+      // Pass world position, normal, and lake attributes from vertex shader
       shader.vertexShader = `
+        attribute vec2 aLakeData;
+        varying vec2 vLakeData;
         varying vec3 vCustomWorldPos;
         varying vec3 vCustomWorldNorm;
         ${shader.vertexShader}
@@ -177,6 +241,7 @@ export class TerrainMaterialFactory {
         #include <worldpos_vertex>
         vCustomWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
         vCustomWorldNorm = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+        vLakeData = aLakeData;
         `
       );
 
@@ -210,12 +275,28 @@ export class TerrainMaterialFactory {
         uniform float uSheenIntensity;
         uniform vec3 uSheenColor;
 
-        // Emerald Lake Ice Uniforms
+        // Emerald Lake Ice Uniforms (Live tweakable via LakeMaterialUI)
         uniform vec3 uLakeDeepColor;
         uniform vec3 uLakeMidColor;
         uniform vec3 uLakeBrightColor;
         uniform vec3 uLakeFrostColor;
+        uniform vec3 uLakeCrackColor;
+        uniform float uLakeRoughness;
+        uniform float uLakeMetalness;
+        uniform float uLakeSpecular;
+        uniform float uLakeGlintPower;
+        uniform float uLakeFresnel;
+        uniform float uLakeFresnelPower;
+        uniform float uLakeSSS;
+        uniform float uLakeCrackScale;
+        uniform float uLakeCrackIntensity;
+        uniform float uLakeCrackWidth;
+        uniform float uLakeNoiseScale;
+        uniform float uLakeNoiseThreshold;
+        uniform float uLakeNormalRipples;
+        uniform sampler2D uLakeNoiseMap;
 
+        varying vec2 vLakeData;
         varying vec3 vCustomWorldPos;
         varying vec3 vCustomWorldNorm;
 
@@ -228,83 +309,13 @@ export class TerrainMaterialFactory {
         float g_lakeFactor;
         float g_lakeDepth;
         vec3 g_lakeIceColor;
+        vec3 g_lakeCrackGlow;
 
         // 2D Rotation Helper
         vec2 rotateUV(vec2 uv, float angle) {
           float s = sin(angle);
           float c = cos(angle);
           return mat2(c, -s, s, c) * uv;
-        }
-
-        // Deterministic Cellular Lake Query for Emerald Ice
-        vec2 lakeHash2(vec2 p) {
-          p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
-          return fract(sin(p) * 43758.5453123);
-        }
-
-        void computeLakeIce(vec2 posXZ, out float outFactor, out float outDepth, out vec3 outColor) {
-          float cellSize = 380.0;
-          vec2 cellCoord = floor(posXZ / cellSize);
-          float maxFactor = 0.0;
-          float lakeCenterDist = 999.0;
-
-          for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-              vec2 cell = cellCoord + vec2(float(dx), float(dz));
-              vec2 h1 = lakeHash2(cell);
-              vec2 h2 = lakeHash2(cell + vec2(53.1, 91.7));
-
-              if (h1.x < 0.45) {
-                vec2 lakePos = (cell + vec2(0.2 + 0.6 * h1.y, 0.2 + 0.6 * h2.x)) * cellSize;
-                float radius = 60.0 + 35.0 * h2.y;
-                float shoreWidth = 24.0;
-
-                float warp = sin(posXZ.x * 0.045 + posXZ.y * 0.035) * 8.0 + cos(posXZ.x * 0.02 - posXZ.y * 0.05) * 10.0;
-                float d = length(posXZ - lakePos) + warp;
-
-                if (d < radius + shoreWidth) {
-                  float f = clamp((radius + shoreWidth - d) / shoreWidth, 0.0, 1.0);
-                  if (f > maxFactor) {
-                    maxFactor = f;
-                    lakeCenterDist = d / (radius + shoreWidth);
-                  }
-                }
-              }
-            }
-          }
-
-          outFactor = maxFactor;
-          outDepth = clamp(1.0 - lakeCenterDist, 0.0, 1.0);
-
-          if (maxFactor > 0.001) {
-            // Deep crystalline ice veins & fractures
-            vec2 crackUV1 = posXZ * 0.12;
-            vec2 crackUV2 = rotateUV(posXZ * 0.22, 0.785) + vec2(5.7, 12.3);
-            float crack1 = abs(sin(crackUV1.x + cos(crackUV1.y * 1.5)) * sin(crackUV1.y + sin(crackUV1.x * 1.5)));
-            float crack2 = abs(sin(crackUV2.x * 1.2 + cos(crackUV2.y * 1.7)) * cos(crackUV2.y * 1.3 - sin(crackUV2.x * 0.9)));
-            float cracks = smoothstep(0.06, 0.0, crack1) * 0.55 + smoothstep(0.04, 0.0, crack2) * 0.35;
-
-            // Emerald palette:
-            // Deep crystalline abyss (#012e24) -> Glowing jewel emerald (#059669) -> Turquoise shine (#10b981) -> Mint frost (#6ee7b7)
-            vec3 deepEmerald = uLakeDeepColor;
-            vec3 midEmerald = uLakeMidColor;
-            vec3 brightEmerald = uLakeBrightColor;
-            vec3 frostRim = uLakeFrostColor;
-
-            // Depth color blend
-            vec3 baseIce = mix(brightEmerald, midEmerald, smoothstep(0.15, 0.60, outDepth));
-            baseIce = mix(baseIce, deepEmerald, smoothstep(0.55, 0.95, outDepth));
-
-            // Internal crystalline hairline crack reflection (bright cyan-white)
-            vec3 crackColor = vec3(0.55, 0.95, 0.85);
-            baseIce += crackColor * cracks * (0.35 + 0.40 * outDepth);
-
-            // Shoreline frost rim
-            vec3 iceColor = mix(frostRim, baseIce, smoothstep(0.08, 0.40, maxFactor));
-            outColor = iceColor;
-          } else {
-            outColor = vec3(0.0);
-          }
         }
 
         // Fast domain warp
@@ -319,6 +330,58 @@ export class TerrainMaterialFactory {
         vec2 hash2(vec2 p) {
           p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
           return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+        }
+
+        // Fast Voronoi cell boundary distance for organic, branching ice stress fractures
+        float getIceVoronoiEdge(vec2 p) {
+          vec2 n = floor(p);
+          vec2 f = fract(p);
+
+          vec2 mg = vec2(0.0);
+          vec2 mr = vec2(0.0);
+          float md = 8.0;
+
+          // Pass 1: find closest fracture seed
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = vec2(float(i), float(j));
+              vec2 o = hash2(n + g) * 0.35 + 0.5; // jitter in [0.15, 0.85]
+              vec2 r = g + o - f;
+              float d = dot(r, r);
+              if (d < md) {
+                md = d;
+                mr = r;
+                mg = g;
+              }
+            }
+          }
+
+          // Pass 2: calculate minimum Euclidean distance to cell boundary (perpendicular bisector)
+          float edgeDist = 8.0;
+          for (int j = -2; j <= 2; j++) {
+            for (int i = -2; i <= 2; i++) {
+              vec2 g = mg + vec2(float(i), float(j));
+              vec2 o = hash2(n + g) * 0.35 + 0.5;
+              vec2 r = g + o - f;
+              vec2 diff = mr - r;
+              if (dot(diff, diff) > 0.0001) {
+                vec2 mid = 0.5 * (mr + r);
+                vec2 dir = normalize(r - mr);
+                edgeDist = min(edgeDist, dot(mid, dir));
+              }
+            }
+          }
+
+          return max(0.0, edgeDist);
+        }
+
+        // Multi-frequency organic domain warping: turns straight Voronoi lines into jagged alpine fissures
+        vec2 warpIceCoord(vec2 p) {
+          float w1 = sin(p.y * 1.35 + sin(p.x * 0.72) * 2.2);
+          float w2 = cos(p.x * 1.28 + sin(p.y * 0.84) * 2.0);
+          float w3 = sin(p.x * 3.4 - p.y * 2.7) * 0.30;
+          float w4 = cos(p.y * 3.8 + p.x * 3.1) * 0.30;
+          return p + vec2(w1 + w3, w2 + w4) * 0.35;
         }
 
         // Optimized dynamic ice crystal sparkle with uniform scale
@@ -466,18 +529,87 @@ export class TerrainMaterialFactory {
         vec3 terrainColor = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
 
         // =========================================================================
-        // 4. FROZEN LAKE EMERALD ICE
+        // 4. FROZEN LAKE GLACIAL ICE
         // =========================================================================
-        float lakeFactor = 0.0;
-        float lakeDepth = 0.0;
-        vec3 lakeColor = vec3(0.0);
-        computeLakeIce(vCustomWorldPos.xz, lakeFactor, lakeDepth, lakeColor);
+        float lakeFactor = vLakeData.x;
+        float lakeDepth = vLakeData.y;
         g_lakeFactor = lakeFactor;
         g_lakeDepth = lakeDepth;
-        g_lakeIceColor = lakeColor;
+
+        vec3 lakeIceColor = vec3(0.0);
+        if (lakeFactor > 0.001) {
+          // Natural organic multi-scale ice stress fracture system
+          vec2 baseIceCoord = vCustomWorldPos.xz * uLakeCrackScale;
+
+          // 1. Primary Structural Fissures (Crisp, organic, jagged tension fractures)
+          vec2 pMacro = warpIceCoord(baseIceCoord * 0.65);
+          float edge1 = getIceVoronoiEdge(pMacro);
+          float core1 = 1.0 - smoothstep(0.003, uLakeCrackWidth, edge1);
+          float frostGlow1 = (1.0 - smoothstep(0.008, uLakeCrackWidth * 2.3, edge1)) * 0.38;
+
+          // 2. Secondary Fine Hairlines (Branching surface crazing at detuned angle)
+          vec2 pMicro = warpIceCoord(rotateUV(baseIceCoord * 1.72, 0.63) + vec2(27.4, 19.8));
+          float edge2 = getIceVoronoiEdge(pMicro);
+          float core2 = (1.0 - smoothstep(0.002, uLakeCrackWidth * 0.62, edge2)) * 0.60;
+
+          // 3. Subsurface 3D Parallax Fissures (Deep within clear ice column)
+          vec3 viewDir = normalize(uCameraPosition - vCustomWorldPos);
+          vec2 deepShift = viewDir.xz * (0.28 * lakeDepth);
+          vec2 pDeep = warpIceCoord((baseIceCoord + deepShift) * 0.42 + vec2(14.7, 43.1));
+          float edgeDeep = getIceVoronoiEdge(pDeep);
+          float coreDeep = (1.0 - smoothstep(0.005, uLakeCrackWidth * 1.25, edgeDeep)) * 0.45;
+
+          // 4. Organic Stress Mask (Natural variation in fracture intensity across the lake)
+          float stressNoise = sin(vCustomWorldPos.x * 0.06 + sin(vCustomWorldPos.z * 0.07) * 2.2) * cos(vCustomWorldPos.z * 0.05);
+          float breakMask1 = smoothstep(-0.5, 0.6, stressNoise);
+          float breakMask2 = smoothstep(-0.4, 0.5, -stressNoise);
+
+          // 5. Seamless Noise Texture Alpha Mask (Selectively overlays cracks only on natural portions of the lake with smooth fade-out)
+          vec2 noiseUV1 = vCustomWorldPos.xz * uLakeNoiseScale;
+          vec2 noiseUV2 = rotateUV(vCustomWorldPos.xz * (uLakeNoiseScale * 2.13), 0.785) + vec2(19.3, 47.1);
+
+          float nMacro = texture2D(uLakeNoiseMap, noiseUV1).r;
+          float nTurb = texture2D(uLakeNoiseMap, noiseUV2).g;
+          float nDetail = texture2D(uLakeNoiseMap, noiseUV2 * 1.7).b;
+
+          // Composite organic noise mask (centered around 0.55)
+          float lakeNoise = nMacro * 0.65 + nTurb * 0.25 + nDetail * 0.10;
+
+          // Smooth alpha transition: portions of lake (< uLakeNoiseThreshold) have ZERO cracks (glassy mirror ice)
+          // while portions (> uLakeNoiseThreshold) smoothly fade in organic fracture fields
+          float crackAlpha = smoothstep(uLakeNoiseThreshold, uLakeNoiseThreshold + 0.24, lakeNoise);
+
+          // Fine hairlines fade out earliest near edges, leaving only deeper fractures dying out into glassy ice
+          float fineAlpha = smoothstep(uLakeNoiseThreshold + 0.10, uLakeNoiseThreshold + 0.34, lakeNoise);
+
+          float totalCracks = (core1 * 1.4 + frostGlow1) * (0.55 + 0.45 * breakMask1)
+                            + core2 * breakMask2 * fineAlpha
+                            + coreDeep * (0.4 + 0.6 * lakeDepth);
+
+          // Depth color blend
+          vec3 baseIce = mix(uLakeBrightColor, uLakeMidColor, smoothstep(0.15, 0.60, lakeDepth));
+          baseIce = mix(baseIce, uLakeDeepColor, smoothstep(0.55, 0.95, lakeDepth));
+
+          // Internal crystalline fracture refraction modulated by noise alpha
+          vec3 crackLight = uLakeCrackColor * totalCracks * (0.50 + 0.50 * lakeDepth) * (uLakeCrackIntensity * 1.8);
+          baseIce += crackLight * crackAlpha;
+
+          // Subtle milky depth scattering along fissure fields
+          vec3 frostVeil = mix(uLakeBrightColor, vec3(0.95, 0.99, 1.0), 0.35) * frostGlow1 * 0.35 * crackAlpha;
+          baseIce += frostVeil;
+
+          // Cache crack radiance for direct specular & transmission pass
+          g_lakeCrackGlow = crackLight * crackAlpha;
+
+          // Shoreline frost rim
+          lakeIceColor = mix(uLakeFrostColor, baseIce, smoothstep(0.08, 0.40, lakeFactor));
+        } else {
+          g_lakeCrackGlow = vec3(0.0);
+        }
+        g_lakeIceColor = lakeIceColor;
 
         float iceBlend = smoothstep(0.08, 0.40, lakeFactor);
-        diffuseColor.rgb = mix(terrainColor, lakeColor, iceBlend);
+        diffuseColor.rgb = mix(terrainColor, lakeIceColor, iceBlend);
         `
       );
 
@@ -492,10 +624,9 @@ export class TerrainMaterialFactory {
         float snowRoughness = mix(uSnowRoughness, uSnowRoughness * 0.74, snowSlope * 0.7);
         float terrainRoughness = mix(rockRoughness * 0.90 + 0.10, snowRoughness, g_snowFactor);
 
-        // Ultra-low roughness (0.025) for mirror-like sky & mountain reflections on emerald lake ice
-        float iceRoughness = 0.025;
+        // Live tweakable roughness (mirror reflection to frosty matte)
         float iceRoughBlend = smoothstep(0.10, 0.45, g_lakeFactor);
-        roughnessFactor = mix(terrainRoughness, iceRoughness, iceRoughBlend);
+        roughnessFactor = mix(terrainRoughness, uLakeRoughness, iceRoughBlend);
         `
       );
 
@@ -506,7 +637,7 @@ export class TerrainMaterialFactory {
         #include <metalnessmap_fragment>
 
         float iceMetalBlend = smoothstep(0.12, 0.48, g_lakeFactor);
-        metalnessFactor = mix(metalnessFactor, 0.12, iceMetalBlend);
+        metalnessFactor = mix(metalnessFactor, uLakeMetalness, iceMetalBlend);
         `
       );
 
@@ -570,7 +701,7 @@ export class TerrainMaterialFactory {
           vec2 rippleUV = vCustomWorldPos.xz * 0.35;
           float rip1 = sin(rippleUV.x * 2.5 + rippleUV.y * 1.8);
           float rip2 = cos(rippleUV.x * 1.2 - rippleUV.y * 2.8);
-          vec2 icePerturb = vec2(rip1, rip2) * 0.015;
+          vec2 icePerturb = vec2(rip1, rip2) * uLakeNormalRipples;
           vec3 worldIceN = normalize(vec3(icePerturb.x, 1.0, icePerturb.y));
           vec3 viewIceN = normalize((viewMatrix * vec4(worldIceN, 0.0)).xyz);
           float iceNormBlend = smoothstep(0.12, 0.50, g_lakeFactor);
@@ -617,20 +748,20 @@ export class TerrainMaterialFactory {
 
           // Direct sun specular glint on mirror ice
           float NdotH = max(0.0, dot(worldUp, H));
-          float iceSpecular = pow(NdotH, 220.0) * 3.5;
+          float iceSpecular = pow(NdotH, uLakeGlintPower) * uLakeSpecular;
           vec3 sunSpecGlint = vec3(1.0, 0.98, 0.92) * iceSpecular;
 
           // Grazing angle Fresnel sheen (luminous emerald glow at glancing angles)
           float NdotV = max(0.0, dot(worldUp, V));
-          float fresnel = pow(1.0 - NdotV, 3.8);
-          vec3 emeraldSheen = mix(uLakeBrightColor, vec3(0.4, 1.0, 0.8), 0.4) * fresnel * 1.4;
+          float fresnel = pow(1.0 - NdotV, uLakeFresnelPower);
+          vec3 emeraldSheen = mix(uLakeBrightColor, vec3(0.4, 1.0, 0.8), 0.4) * fresnel * uLakeFresnel;
 
           // Subsurface crystalline emerald glow
-          float sssIce = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) * (0.35 * g_lakeDepth);
+          float sssIce = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) * (uLakeSSS * g_lakeDepth);
           vec3 iceSSS = uLakeBrightColor * sssIce;
 
           float iceEffectBlend = smoothstep(0.12, 0.55, g_lakeFactor);
-          outgoingLight += (sunSpecGlint + emeraldSheen + iceSSS) * iceEffectBlend;
+          outgoingLight += (sunSpecGlint + emeraldSheen + iceSSS + g_lakeCrackGlow * 1.5) * iceEffectBlend;
         }
 
         #include <opaque_fragment>
@@ -699,18 +830,78 @@ export class TerrainMaterialFactory {
         this.uniforms.uSheenColor.value.set(value);
         break;
       case 'lakeDeepColor':
-        this.uniforms.uLakeDeepColor.value.set(value);
-        break;
       case 'lakeMidColor':
-        this.uniforms.uLakeMidColor.value.set(value);
-        break;
       case 'lakeBrightColor':
-        this.uniforms.uLakeBrightColor.value.set(value);
-        break;
       case 'lakeFrostColor':
-        this.uniforms.uLakeFrostColor.value.set(value);
+        this.setLakeProperty(key, value);
         break;
     }
+  }
+
+  /**
+   * Set a specific frozen lake property in real-time without recompiling shaders.
+   * @param {string} key
+   * @param {*} value
+   */
+  setLakeProperty(key, value) {
+    if (this.lakeConfig[key] !== undefined) {
+      this.lakeConfig[key] = value;
+    }
+
+    const uniformMap = {
+      lakeDeepColor: { uniform: this.uniforms.uLakeDeepColor, isColor: true },
+      lakeMidColor: { uniform: this.uniforms.uLakeMidColor, isColor: true },
+      lakeBrightColor: { uniform: this.uniforms.uLakeBrightColor, isColor: true },
+      lakeFrostColor: { uniform: this.uniforms.uLakeFrostColor, isColor: true },
+      lakeCrackColor: { uniform: this.uniforms.uLakeCrackColor, isColor: true },
+      lakeRoughness: { uniform: this.uniforms.uLakeRoughness, isColor: false },
+      lakeMetalness: { uniform: this.uniforms.uLakeMetalness, isColor: false },
+      lakeSpecular: { uniform: this.uniforms.uLakeSpecular, isColor: false },
+      lakeGlintPower: { uniform: this.uniforms.uLakeGlintPower, isColor: false },
+      lakeFresnel: { uniform: this.uniforms.uLakeFresnel, isColor: false },
+      lakeFresnelPower: { uniform: this.uniforms.uLakeFresnelPower, isColor: false },
+      lakeSSS: { uniform: this.uniforms.uLakeSSS, isColor: false },
+      lakeCrackScale: { uniform: this.uniforms.uLakeCrackScale, isColor: false },
+      lakeCrackIntensity: { uniform: this.uniforms.uLakeCrackIntensity, isColor: false },
+      lakeCrackWidth: { uniform: this.uniforms.uLakeCrackWidth, isColor: false },
+      lakeNoiseScale: { uniform: this.uniforms.uLakeNoiseScale, isColor: false },
+      lakeNoiseThreshold: { uniform: this.uniforms.uLakeNoiseThreshold, isColor: false },
+      lakeNormalRipples: { uniform: this.uniforms.uLakeNormalRipples, isColor: false },
+    };
+
+    const entry = uniformMap[key];
+    if (entry && entry.uniform) {
+      if (entry.isColor) {
+        entry.uniform.value.set(value);
+      } else {
+        entry.uniform.value = Number(value);
+      }
+    }
+  }
+
+  /**
+   * Update full or partial frozen lake material config.
+   * @param {Partial<typeof DEFAULT_LAKE_CONFIG>} newConfig
+   */
+  setLakeConfig(newConfig) {
+    for (const [k, v] of Object.entries(newConfig)) {
+      this.setLakeProperty(k, v);
+    }
+  }
+
+  /**
+   * Get current active frozen lake material config.
+   * @returns {typeof DEFAULT_LAKE_CONFIG}
+   */
+  getLakeConfig() {
+    return { ...this.lakeConfig };
+  }
+
+  /**
+   * Reset frozen lake material to pristine default parameters.
+   */
+  resetLakeConfig() {
+    this.setLakeConfig(DEFAULT_LAKE_CONFIG);
   }
 
   /**

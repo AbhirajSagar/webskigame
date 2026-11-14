@@ -69,8 +69,9 @@ export class FpsCounter {
   /**
    * @param {number} [speedKmh] - Current player velocity in km/h
    * @param {boolean} [isAirborne] - Whether player is currently in flight
+   * @param {string} [mode] - Active player mode ('ski' | 'fly')
    */
-  update(speedKmh = 0, isAirborne = false) {
+  update(speedKmh = 0, isAirborne = false, mode = 'ski') {
     this.frames++;
     const now = performance.now();
     const elapsed = now - this.prevTime;
@@ -93,7 +94,10 @@ export class FpsCounter {
         this.fpsValue.style.color = '#ef4444';
       }
 
-      if (isAirborne) {
+      if (mode === 'fly') {
+        this.speedValue.textContent = `FLY ${speedKmh} km/h`;
+        this.speedValue.style.color = '#38bdf8';
+      } else if (isAirborne) {
         this.speedValue.textContent = `AIR ${speedKmh} km/h`;
         this.speedValue.style.color = '#a855f7'; // Purple badge for airtime
       } else {

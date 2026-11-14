@@ -163,66 +163,151 @@ export class TerrainHeightmap {
     this.simplexHills = new SimplexNoise(seed + 202);
     this.simplexWarp = new SimplexNoise(seed + 303);
     this.simplexCrags = new SimplexNoise(seed + 404);
+    this._lakeCellCache = new Map();
   }
 
   /**
-   * Continuous world height function.
-   * Produces imposing alpine mountain ranges, rocky cliffs, and smooth ski runs
-   * without unnatural spikes, kinks, or seam artifacts.
+   * Calculates pure geological terrain elevation prior to any lake carving.
+   * @param {number} x
+   * @param {number} z
+   * @returns {number}
    */
-  getHeight(x, z) {
-    // 1. Organic domain warp for natural meandering mountain chains and curved valleys
+  getBaseHeight(x, z) {
     const warpScale = 0.0011;
     const warpStrength = 65.0;
     const wx = x + warpStrength * this.simplexWarp.noise2D(x * warpScale, z * warpScale);
     const wz = z + warpStrength * this.simplexWarp.noise2D((x + 52.3) * warpScale, (z + 87.1) * warpScale);
 
-    // 2. Continental / Mountain Belt Mask (defines where valleys vs massive mountain ranges exist)
     const continentalNoise = this.simplexBase.fbm(wx * 0.00075, wz * 0.00075, 3, 2.0, 0.5);
-    const continentalMask = (continentalNoise + 1.0) * 0.5; // [0, 1]
+    const continentalMask = (continentalNoise + 1.0) * 0.5;
 
-    // 3. Alpine Valley Basins & Ski Pistes (smooth flowing valleys)
     const valley = this.simplexBase.fbm(wx * 0.0018, wz * 0.0018, 3, 2.0, 0.45) * 8.0;
-
-    // Valley drainage depressions
     const valleyNoise = this.simplexBase.noise2D(wx * 0.0012 + 10.0, wz * 0.0012 + 20.0);
     const valleyDepression = (valleyNoise * valleyNoise) * -4.0;
 
-    // 4. Foothills & Mountain Shoulders
     const hillWeight = smoothstep(0.24, 0.55, continentalMask);
     const hills = this.simplexHills.fbm(wx * 0.0028, wz * 0.0028, 4, 2.0, 0.48) * 36.0;
 
-    // 5. Alpine Mountains, Rocky Cirques & Towering Peaks
     const mountainWeight = smoothstep(0.38, 0.82, continentalMask);
-
-    // Primary knife-edge ridged noise with C^2 smooth crests
     const ridge1 = this.simplexMountains.ridged(wx * 0.0020, wz * 0.0020, 5, 2.1, 0.55);
-    // Secondary ridged layer for rock outcroppings & crags
     const ridge2 = this.simplexMountains.ridged(wx * 0.0045, wz * 0.0045, 4, 2.0, 0.50);
-    // Smooth billow layer for massive mountain body
     const rawBillow = this.simplexMountains.noise2D(wx * 0.0015 + 45.0, wz * 0.0015 + 72.0);
     const billow = Math.sqrt(rawBillow * rawBillow + 0.02);
-
-    // Non-linear elevation shaping: peaks soar dramatically above their shoulders
     const shapedRidge = Math.pow(ridge1, 1.40) * 1.20;
     const mountainMass = (shapedRidge * 120.0 + ridge2 * 32.0 + billow * 40.0);
 
-    // 6. Smooth Geological Crags (subtle rock shelves without high-frequency derivative noise)
     const cragNoise = this.simplexCrags.noise2D(wx * 0.006, wz * 0.006);
     const rockyCrags = cragNoise * 3.5;
 
-    // 7. Synthesis & Layering
-    let elevation = valley + valleyDepression;
-    elevation += hills * hillWeight;
-    elevation += (mountainMass + rockyCrags) * mountainWeight;
+    return valley + valleyDepression + hills * hillWeight + (mountainMass + rockyCrags) * mountainWeight;
+  }
+
+  /**
+   * Helper to retrieve continental mountain belt mask [0, 1]
+   * @private
+   */
+  _getContinentalMask(x, z) {
+    const warpScale = 0.0011;
+    const warpStrength = 65.0;
+    const wx = x + warpStrength * this.simplexWarp.noise2D(x * warpScale, z * warpScale);
+    const wz = z + warpStrength * this.simplexWarp.noise2D((x + 52.3) * warpScale, (z + 87.1) * warpScale);
+    const continentalNoise = this.simplexBase.fbm(wx * 0.00075, wz * 0.00075, 3, 2.0, 0.5);
+    return (continentalNoise + 1.0) * 0.5;
+  }
+
+  /**
+   * Resolves flat alpine valley lake for a cellular grid block.
+   * Lakes only spawn if the candidate location is verified flat (valley basin).
+   * @private
+   */
+  _getCellLake(cellX, cellZ) {
+    const key = `${cellX},${cellZ}`;
+    if (this._lakeCellCache.has(key)) return this._lakeCellCache.get(key);
+
+    const cellSize = 380.0;
+    const h1x = Math.sin(cellX * 127.1 + cellZ * 311.7) * 43758.5453;
+    const h1_x = h1x - Math.floor(h1x);
+
+    // Lake candidate cell probability gate
+    if (h1_x > 0.65) {
+      const empty = { isLake: false };
+      this._lakeCellCache.set(key, empty);
+      return empty;
+    }
+
+    const h1y = Math.sin(cellX * 269.5 + cellZ * 183.3) * 43758.5453;
+    const h2x = Math.sin((cellX + 53.1) * 127.1 + (cellZ + 91.7) * 311.7) * 43758.5453;
+    const h2y = Math.sin((cellX + 53.1) * 269.5 + (cellZ + 91.7) * 183.3) * 43758.5453;
+    const h1_y = h1y - Math.floor(h1y);
+    const h2_x = h2x - Math.floor(h2x);
+    const h2_y = h2y - Math.floor(h2y);
+
+    const radius = 55.0 + 30.0 * h2_y;
+    const shoreWidth = 22.0;
+
+    // Search 5 candidate locations across the cell for the flattest valley basin
+    const candidates = [
+      [(cellX + 0.2 + 0.6 * h1_y) * cellSize, (cellZ + 0.2 + 0.6 * h2_x) * cellSize],
+      [(cellX + 0.5) * cellSize, (cellZ + 0.5) * cellSize],
+      [(cellX + 0.25) * cellSize, (cellZ + 0.75) * cellSize],
+      [(cellX + 0.75) * cellSize, (cellZ + 0.25) * cellSize],
+      [(cellX + 0.5 + 0.3 * (h1_x - 0.5)) * cellSize, (cellZ + 0.5 + 0.3 * (h2_x - 0.5)) * cellSize]
+    ];
+
+    let best = null;
+    let minSlope = Infinity;
+
+    for (const [candX, candZ] of candidates) {
+      // 1. Continental mask check: strictly avoid mountain ranges and high foothills
+      const mask = this._getContinentalMask(candX, candZ);
+      if (mask > 0.36) continue;
+
+      // 2. Strict slope & elevation difference check across candidate lake footprint
+      const testR = radius * 0.7;
+      const h0 = this.getBaseHeight(candX, candZ);
+      const hE = this.getBaseHeight(candX + testR, candZ);
+      const hW = this.getBaseHeight(candX - testR, candZ);
+      const hN = this.getBaseHeight(candX, candZ + testR);
+      const hS = this.getBaseHeight(candX, candZ - testR);
+      const maxDiff = Math.max(Math.abs(hE - h0), Math.abs(hW - h0), Math.abs(hN - h0), Math.abs(hS - h0));
+      const slope = maxDiff / testR;
+
+      // Max allowed slope is ~4.5 degrees (0.08) - guaranteeing an authentic flat valley
+      if (slope < 0.08 && slope < minSlope) {
+        minSlope = slope;
+        best = {
+          isLake: true,
+          x: candX,
+          z: candZ,
+          radius,
+          shoreWidth,
+          elevation: h0 - 0.2, // Lake ice sheet sits flush in the valley floor
+          slope
+        };
+      }
+    }
+
+    const res = best || { isLake: false };
+    this._lakeCellCache.set(key, res);
+    return res;
+  }
+
+  /**
+   * Continuous world height function.
+   * Produces imposing alpine mountain ranges, rocky cliffs, and flat frozen valley lakes.
+   */
+  getHeight(x, z) {
+    const baseElev = this.getBaseHeight(x, z);
+    const wx = x;
+    const wz = z;
 
     // Subtle surface micro-undulation for snow surface relief
     const micro = this.simplexBase.noise2D(wx * 0.012, wz * 0.012) * 0.4;
 
-    // 8. Frozen Alpine Lake Basins
+    // Frozen Alpine Lake Basins
     const lake = this.getLakeData(x, z);
+    let elevation = baseElev;
     if (lake.factor > 0.0) {
-      // Smoothly carve and level the valley basin down to the flat frozen ice sheet
       const flatT = smoothstep(0.0, 0.65, lake.factor);
       elevation = elevation * (1.0 - flatT) + lake.elevation * flatT;
     }
@@ -233,11 +318,10 @@ export class TerrainHeightmap {
   }
 
   /**
-   * Deterministic cellular query for frozen alpine lake basins.
-   * Matches GLSL shader implementation to maintain 100% elevation, normal, and visual alignment.
+   * Deterministic cellular query for flat frozen alpine lake basins.
    * @param {number} x
    * @param {number} z
-   * @returns {{ factor: number, elevation: number, isFrozenLake: boolean }}
+   * @returns {{ factor: number, depth: number, elevation: number, isFrozenLake: boolean }}
    */
   getLakeData(x, z) {
     const cellSize = 380.0;
@@ -245,50 +329,93 @@ export class TerrainHeightmap {
     const cz = Math.floor(z / cellSize);
 
     let maxFactor = 0.0;
+    let maxDepth = 0.0;
     let lakeElevation = 0.0;
     let isFrozenLake = false;
 
     for (let dx = -1; dx <= 1; dx++) {
       for (let dz = -1; dz <= 1; dz++) {
-        const cellX = cx + dx;
-        const cellZ = cz + dz;
+        const lake = this._getCellLake(cx + dx, cz + dz);
+        if (!lake.isLake) continue;
 
-        const h1x = Math.sin(cellX * 127.1 + cellZ * 311.7) * 43758.5453;
-        const h1y = Math.sin(cellX * 269.5 + cellZ * 183.3) * 43758.5453;
-        const h1_x = h1x - Math.floor(h1x);
-        const h1_y = h1y - Math.floor(h1y);
+        const warp = Math.sin(x * 0.045 + z * 0.035) * 6.0 + Math.cos(x * 0.02 - z * 0.05) * 7.0;
+        const dist = Math.hypot(x - lake.x, z - lake.z) + warp;
 
-        const h2x = Math.sin((cellX + 53.1) * 127.1 + (cellZ + 91.7) * 311.7) * 43758.5453;
-        const h2y = Math.sin((cellX + 53.1) * 269.5 + (cellZ + 91.7) * 183.3) * 43758.5453;
-        const h2_x = h2x - Math.floor(h2x);
-        const h2_y = h2y - Math.floor(h2y);
-
-        // 45% of cells form frozen alpine lakes
-        if (h1_x < 0.45) {
-          const lakeX = (cellX + 0.2 + 0.6 * h1_y) * cellSize;
-          const lakeZ = (cellZ + 0.2 + 0.6 * h2_x) * cellSize;
-          const radius = 60.0 + 35.0 * h2_y;
-          const shoreWidth = 24.0;
-          const elev = -10.0 + 14.0 * h1_x;
-
-          const warp = Math.sin(x * 0.045 + z * 0.035) * 8.0 + Math.cos(x * 0.02 - z * 0.05) * 10.0;
-          const dist = Math.hypot(x - lakeX, z - lakeZ) + warp;
-
-          if (dist < radius + shoreWidth) {
-            const factor = Math.max(0.0, Math.min(1.0, (radius + shoreWidth - dist) / shoreWidth));
-            if (factor > maxFactor) {
-              maxFactor = factor;
-              lakeElevation = elev;
-              if (factor > 0.35) {
-                isFrozenLake = true;
-              }
+        if (dist < lake.radius + lake.shoreWidth) {
+          const factor = Math.max(0.0, Math.min(1.0, (lake.radius + lake.shoreWidth - dist) / lake.shoreWidth));
+          const depth = Math.max(0.0, Math.min(1.0, (lake.radius - dist) / lake.radius));
+          if (factor > maxFactor) {
+            maxFactor = factor;
+            maxDepth = depth;
+            lakeElevation = lake.elevation;
+            if (factor > 0.35) {
+              isFrozenLake = true;
             }
           }
         }
       }
     }
 
-    return { factor: maxFactor, elevation: lakeElevation, isFrozenLake };
+    return { factor: maxFactor, depth: maxDepth, elevation: lakeElevation, isFrozenLake };
+  }
+
+  /**
+   * Checks whether a given world coordinate is inside or within clearance of a frozen lake.
+   * Used to guarantee zero trees spawn on or near the lake.
+   * @param {number} x
+   * @param {number} z
+   * @param {number} [clearance=10.0]
+   * @returns {boolean}
+   */
+  isNearLake(x, z, clearance = 10.0) {
+    const cellSize = 380.0;
+    const cx = Math.floor(x / cellSize);
+    const cz = Math.floor(z / cellSize);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const lake = this._getCellLake(cx + dx, cz + dz);
+        if (!lake.isLake) continue;
+
+        const warp = Math.sin(x * 0.045 + z * 0.035) * 6.0 + Math.cos(x * 0.02 - z * 0.05) * 7.0;
+        const dist = Math.hypot(x - lake.x, z - lake.z) + warp;
+
+        if (dist < lake.radius + lake.shoreWidth + clearance) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Finds the nearest flat frozen lake to a world position.
+   * Useful for camera focus and instant player teleportation.
+   * @param {number} x
+   * @param {number} z
+   * @returns {{ x: number, z: number, elevation: number, radius: number } | null}
+   */
+  getNearestLake(x, z) {
+    const cellSize = 380.0;
+    const cx = Math.floor(x / cellSize);
+    const cz = Math.floor(z / cellSize);
+
+    let nearest = null;
+    let minDistSq = Infinity;
+
+    for (let dx = -8; dx <= 8; dx++) {
+      for (let dz = -8; dz <= 8; dz++) {
+        const lake = this._getCellLake(cx + dx, cz + dz);
+        if (!lake.isLake) continue;
+
+        const dSq = (x - lake.x) * (x - lake.x) + (z - lake.z) * (z - lake.z);
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
+          nearest = { x: lake.x, z: lake.z, elevation: lake.elevation, radius: lake.radius };
+        }
+      }
+    }
+    return nearest;
   }
 
   /**

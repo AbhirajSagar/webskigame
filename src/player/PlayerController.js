@@ -67,6 +67,7 @@ export class PlayerController {
     this.isGrounded = true;
     this.airTime = 0.0;
     this.speed = 0.0;
+    this.isPlaying = false; // Waits at starting gate until user clicks Play
 
     // Fly spectator mode speeds
     this.flySpeed = 45.0;
@@ -83,9 +84,14 @@ export class PlayerController {
     // Base camera FOV
     this.baseFov = camera.fov || 65;
 
-    // Input state: Only forward (W) and boost (Shift) are active
+    // Input state: Full 6-DOF controls for Fly spectator mode & Skiing
     this.keys = {
       forward: false,
+      backward: false,
+      left: false,
+      right: false,
+      up: false,
+      down: false,
       sprint: false,
     };
 
@@ -112,7 +118,10 @@ export class PlayerController {
     window.addEventListener('keyup', (e) => this._onKeyUp(e));
 
     this.domElement.addEventListener('click', () => {
-      this.domElement.requestPointerLock?.();
+      const p = this.domElement.requestPointerLock?.();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {});
+      }
     });
 
     document.addEventListener('pointerlockchange', () => {
@@ -236,10 +245,38 @@ export class PlayerController {
   }
 
   _onKeyDown(e) {
+    // Ignore input hotkeys when typing in form fields
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+      return;
+    }
+
     switch (e.code) {
+      case 'KeyF':
+        this.toggleMode();
+        break;
       case 'KeyW':
       case 'ArrowUp':
         this.keys.forward = true;
+        break;
+      case 'KeyS':
+      case 'ArrowDown':
+        this.keys.backward = true;
+        break;
+      case 'KeyA':
+      case 'ArrowLeft':
+        this.keys.left = true;
+        break;
+      case 'KeyD':
+      case 'ArrowRight':
+        this.keys.right = true;
+        break;
+      case 'Space':
+        this.keys.up = true;
+        break;
+      case 'KeyC':
+      case 'ControlLeft':
+      case 'ControlRight':
+        this.keys.down = true;
         break;
       case 'ShiftLeft':
       case 'ShiftRight':
@@ -253,6 +290,26 @@ export class PlayerController {
       case 'KeyW':
       case 'ArrowUp':
         this.keys.forward = false;
+        break;
+      case 'KeyS':
+      case 'ArrowDown':
+        this.keys.backward = false;
+        break;
+      case 'KeyA':
+      case 'ArrowLeft':
+        this.keys.left = false;
+        break;
+      case 'KeyD':
+      case 'ArrowRight':
+        this.keys.right = false;
+        break;
+      case 'Space':
+        this.keys.up = false;
+        break;
+      case 'KeyC':
+      case 'ControlLeft':
+      case 'ControlRight':
+        this.keys.down = false;
         break;
       case 'ShiftLeft':
       case 'ShiftRight':
@@ -295,6 +352,15 @@ export class PlayerController {
   toggleMode() {
     this.mode = this.mode === 'ski' ? 'fly' : 'ski';
     this.velocity.set(0, 0, 0);
+    if (this.mode === 'ski') {
+      const groundH = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+      if (this.position.y < groundH + this.eyeHeight) {
+        this.position.y = groundH + this.eyeHeight;
+        this.isGrounded = true;
+      } else {
+        this.isGrounded = false;
+      }
+    }
     if (this.onModeChange) {
       this.onModeChange(this.mode);
     }
@@ -312,6 +378,13 @@ export class PlayerController {
     return !this.isGrounded && this.mode === 'ski';
   }
 
+  /**
+   * Starts the downhill run once the player presses Play.
+   */
+  start() {
+    this.isPlaying = true;
+  }
+
   update(deltaTime) {
     // Skip zero/negative delta time (prevents divide-by-zero on initial clock frame)
     if (!deltaTime || deltaTime <= 0.0001) return;
@@ -325,6 +398,17 @@ export class PlayerController {
     }
     if (!Number.isFinite(this.velocity.x) || !Number.isFinite(this.velocity.y) || !Number.isFinite(this.velocity.z)) {
       this.velocity.set(0, 0, 0);
+    }
+
+    // Keep skier poised at summit starting gate until user clicks Play (unless in fly mode)
+    if (!this.isPlaying && this.mode === 'ski') {
+      this.velocity.set(0, 0, 0);
+      const groundH = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+      this.position.y = groundH + this.eyeHeight;
+      this.cameraY = this.position.y;
+      this.camera.position.copy(this.position);
+      this._updateCameraRotation();
+      return;
     }
 
     // Compute camera heading vectors (0 runtime heap allocations)
@@ -390,6 +474,18 @@ export class PlayerController {
         if (horizSpeed < this.pushAccel) {
           const pushForce = (this.pushAccel - horizSpeed) * 3.5;
           this.velocity.addScaledVector(_scratchForwardXZ, pushForce * dt);
+        }
+      }
+
+      // Active snowplow / hockey-stop braking (S or ArrowDown)
+      if (this.keys.backward) {
+        const brakeDecel = this.brakePower * dt;
+        const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+        if (currentSpeed > 0.001) {
+          const newSpeed = Math.max(0, currentSpeed - brakeDecel);
+          const ratio = newSpeed / currentSpeed;
+          this.velocity.x *= ratio;
+          this.velocity.z *= ratio;
         }
       }
 
@@ -523,6 +619,11 @@ export class PlayerController {
     _scratchMoveDir.set(0, 0, 0);
 
     if (this.keys.forward) _scratchMoveDir.add(forward);
+    if (this.keys.backward) _scratchMoveDir.sub(forward);
+    if (this.keys.right) _scratchMoveDir.add(right);
+    if (this.keys.left) _scratchMoveDir.sub(right);
+    if (this.keys.up) _scratchMoveDir.y += 1;
+    if (this.keys.down) _scratchMoveDir.y -= 1;
 
     if (_scratchMoveDir.lengthSq() > 0.0001) {
       _scratchMoveDir.normalize();
