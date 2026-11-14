@@ -77,6 +77,8 @@ export class PlayerController {
     // Orientation (aimed down the mountain slope toward the forest vista)
     this.yaw = 1.35;
     this.pitch = -0.05;
+    this.minPitch = -75 * (Math.PI / 180); // Clamp looking down to max 75 degrees
+    this.maxPitch = 85 * (Math.PI / 180);  // Allow looking up towards sky and peaks
     this.isPointerLocked = false;
     this.isDragging = false;
     this.prevMouseX = 0;
@@ -207,9 +209,7 @@ export class PlayerController {
 
           this.yaw -= dx * sensitivity;
           this.pitch -= dy * sensitivity;
-
-          const maxPitch = Math.PI / 2 - 0.05;
-          this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
+          this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
 
           this._updateCameraRotation();
         }
@@ -348,9 +348,8 @@ export class PlayerController {
       return;
     }
 
-    // Clamp pitch to avoid gimbal flip
-    const maxPitch = Math.PI / 2 - 0.05;
-    this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
+    // Clamp pitch: max 75 degrees looking down, 85 degrees looking up
+    this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
 
     this._updateCameraRotation();
   }
