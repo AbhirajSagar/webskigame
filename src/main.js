@@ -11,7 +11,7 @@ import './style.css';
 const loadingOverlay = new LoadingOverlay();
 
 let loadedItemsCount = 0;
-let estimatedTotalItems = 11;
+let estimatedTotalItems = 12;
 
 THREE.DefaultLoadingManager.onStart = (url, itemsLoaded, itemsTotal) => {
   estimatedTotalItems = Math.max(estimatedTotalItems, itemsTotal);
@@ -70,7 +70,7 @@ scene.add(ambientLight);
 const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.8);
 sunLight.position.set(130, 190, 90);
 sunLight.castShadow = true;
-// Ultra-lightweight 512x512 shadow map: 75% fewer texels than 1024 (89% fewer than 1536)
+// Ultra-lightweight 512x512 shadow map: 75% fewer texels than 1024
 // Combines with PCFSoftShadowMap to give smooth alpine shadows with near-zero fillrate cost
 sunLight.shadow.mapSize.width = 512;
 sunLight.shadow.mapSize.height = 512;
@@ -100,7 +100,6 @@ const skyboxPromise = new Promise((resolve) => {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       scene.background = texture;
       scene.environment = texture;
-      boardScene.environment = texture;
       skyboxTexture = texture;
 
       // Refresh impostor billboard lighting with full HDRI environment once loaded
@@ -129,43 +128,25 @@ const terrainManager = new TerrainManager(scene, {
   renderer,              // WebGLRenderer for offscreen impostor baking & GPU features
 });
 
-// --- Secondary Overlay Scene & Camera for Snowboard (Stacked Viewmodel Pass) ---
-const boardScene = new THREE.Scene();
-const secondaryCamera = new THREE.PerspectiveCamera(
-  camera.fov,
-  window.innerWidth / window.innerHeight,
-  0.05,
-  1000
-);
+// --- Player Controller (Third-Person TPS Skater & Snowboard System) ---
+const player = new PlayerController(camera, canvas, terrainManager, scene);
 
-// Board scene lighting matching primary scene sun and ambient
-const boardAmbientLight = new THREE.AmbientLight(0xffffff, 0.6);
-boardScene.add(boardAmbientLight);
-
-const boardSunLight = new THREE.DirectionalLight(0xfff5e6, 1.8);
-boardSunLight.position.set(130, 190, 90);
-boardScene.add(boardSunLight);
-boardScene.add(boardSunLight.target);
-
-// --- Player Controller ---
-const player = new PlayerController(camera, canvas, terrainManager, boardScene);
-
-// Expose handle for runtime telemetry
+// Expose handle for runtime telemetry and debugging
 window.__GAME = { scene, camera, renderer, player, terrainManager };
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
 
-// Snowboard model loading promise
-const boardPromise = player.snowboard.load();
+// Character and snowboard 3D models loading promise (Skateboarding.fbx + board.fbx)
+const riderPromise = player.character.load();
 
-// Coordinate asset loading: wait until skybox, tree pack models, board, and textures finish
+// Coordinate asset loading: wait until skybox, trees, and rider finish
 const MAX_LOAD_TIMEOUT = 12000;
 const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
 
 Promise.race([
-  Promise.all([skyboxPromise, treesPromise, boardPromise]),
-  timeoutPromise
+  Promise.all([skyboxPromise, treesPromise, riderPromise]),
+  timeoutPromise,
 ]).then(() => {
   // If skybox loaded, ensure tree impostors have environment reflection
   if (skyboxTexture && terrainManager?.treeGenerator?.isLoaded) {
@@ -181,7 +162,7 @@ Promise.race([
   loadingOverlay.setReady();
 });
 
-// Launch downhill ski run when user clicks Play button (fullscreen is handled inside loadingOverlay)
+// Launch downhill ski run when user clicks Play button
 loadingOverlay.onPlay(() => {
   player.start();
 });
@@ -197,9 +178,6 @@ window.addEventListener('resize', () => {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
 
-  secondaryCamera.aspect = width / height;
-  secondaryCamera.updateProjectionMatrix();
-
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
 });
@@ -213,14 +191,7 @@ const forwardDir = new THREE.Vector3();
 const shadowCenter = new THREE.Vector3();
 const shadowTexelSize = (2 * shadowCoverage) / 512;
 
-// Pre-warm WebGL shader pipelines to prevent initial frame compilation hitch
-renderer.compile(scene, camera);
-if (player.snowboard?.isLoaded) {
-  renderer.compile(boardScene, secondaryCamera);
-}
-
-function animate() 
-{
+function animate() {
   requestAnimationFrame(animate);
 
   // Delta time clamping prevents physics tunneling and loading spikes after tab switch / hitches
@@ -228,16 +199,15 @@ function animate()
   const delta = Math.min(rawDelta, 0.05);
   const elapsedTime = clock.getElapsedTime();
 
-  // 1. Update player physics & camera
+  // 1. Update player physics, Third-Person camera, rider animations, and snow spray
   player.update(delta);
 
-  // Forward-biased sun shadow frustum: biases shadow coverage 25m in front of skier,
-  // focusing resolution where the camera looks and culling wasted off-screen shadows behind player
+  // Forward-biased sun shadow frustum: biases shadow coverage around third-person rider
   camera.getWorldDirection(forwardDir);
   forwardDir.y = 0;
   if (forwardDir.lengthSq() > 0.001) forwardDir.normalize();
 
-  shadowCenter.copy(player.position).addScaledVector(forwardDir, 25);
+  shadowCenter.copy(player.position).addScaledVector(forwardDir, 16);
 
   // Discrete texel grid snapping: locks shadow map coordinates to whole texels,
   // eliminating shadow edge shimmering and crawling artifacts while moving
@@ -251,35 +221,10 @@ function animate()
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, camera);
 
-  // 3. Render primary world scene as it is
-  renderer.autoClear = true;
+  // 3. Render complete world scene (including rider, board, snow spray, terrain, trees, and soft shadows)
   renderer.render(scene, camera);
 
-  // 4. Render secondary camera on top of the primary camera (stacked overlay pass)
-  if (player.mode === 'ski' && player.snowboard?.isLoaded) {
-    // Keep secondary camera locked to primary camera in position, rotation, scale, FOV, and projection
-    secondaryCamera.position.copy(camera.position);
-    secondaryCamera.quaternion.copy(camera.quaternion);
-    secondaryCamera.scale.copy(camera.scale);
-    secondaryCamera.fov = camera.fov;
-    secondaryCamera.aspect = camera.aspect;
-    secondaryCamera.near = camera.near;
-    secondaryCamera.far = camera.far;
-    secondaryCamera.updateProjectionMatrix();
-
-    // Sync board lighting with sun direction
-    boardSunLight.position.copy(sunLight.position);
-    boardSunLight.target.position.copy(sunLight.target.position);
-    boardSunLight.target.updateMatrixWorld();
-
-    // Stacked render: clear only the depth buffer and render boardScene on top of primary camera
-    renderer.autoClear = false;
-    renderer.clearDepth();
-    renderer.render(boardScene, secondaryCamera);
-    renderer.autoClear = true;
-  }
-
-  // 5. Update FPS & Ski / Flight Telemetry
+  // 4. Update FPS & Ski / Flight Telemetry
   fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode);
 }
 

@@ -106,40 +106,8 @@ export class TreeGenerator {
    */
   static getSharedMaterials() {
     if (this._materialCache) return this._materialCache;
-    const textures = TreeGenerator._textureCache || {};
-    this._materialCache = {
-      needles: new THREE.MeshStandardMaterial({
-        name: 'AlpinePineNeedles',
-        color: 0xffffff,
-        map: textures.branchDiffuse || null,
-        normalMap: textures.branchNormal || null,
-        normalScale: new THREE.Vector2(0.8, 0.8),
-        roughness: 1,
-        metalness: 0.0,
-        side: THREE.DoubleSide,
-        transparent: true,
-        alphaTest: 0.40,
-        depthWrite: true,
-      }),
-      livingBark: new THREE.MeshStandardMaterial({
-        name: 'AlpinePineTrunk',
-        color: 0xffffff,
-        map: textures.barkDiffuse || null,
-        normalMap: textures.barkNormal || null,
-        normalScale: new THREE.Vector2(1.1, 1.1),
-        roughness: 0.85,
-        metalness: 0.02,
-      }),
-      deadBark: new THREE.MeshStandardMaterial({
-        name: 'AlpineDeadBark',
-        color: 0xffffff,
-        map: textures.barkDiffuse || null,
-        normalMap: textures.barkNormal || null,
-        normalScale: new THREE.Vector2(1.1, 1.1),
-        roughness: 0.90,
-        metalness: 0.02,
-      }),
-    };
+    const textures = TreeGenerator._textureCache || TreeTextureFactory.getTextures() || {};
+    this._materialCache = TreeTextureFactory.createMaterials(textures);
     return this._materialCache;
   }
 
@@ -227,48 +195,13 @@ export class TreeGenerator {
   }
 
   /**
-   * Loads textures for bark, branches, and deadwood.
-   * Loads from /textures/ with procedural fallback.
+   * Loads textures for bark, branches (snow, green, orange), and deadwood.
+   * Loads from /textures/ with procedural fallback via TreeTextureFactory.
    * @private
    */
   async _loadTextures() {
     if (TreeGenerator._textureCache) return TreeGenerator._textureCache;
-
-    const textureLoader = new THREE.TextureLoader();
-    const loadTex = (url, isSRGB = false, repeatX = 1, repeatY = 1) => {
-      return new Promise((resolve) => {
-        textureLoader.load(
-          url,
-          (t) => {
-            t.wrapS = THREE.RepeatWrapping;
-            t.wrapT = THREE.RepeatWrapping;
-            t.repeat.set(repeatX, repeatY);
-            if (isSRGB) t.colorSpace = THREE.SRGBColorSpace;
-            resolve(t);
-          },
-          undefined,
-          () => resolve(null)
-        );
-      });
-    };
-
-    const [barkDiff, barkNorm, branchDiffGreen, branchDiffOrange, branchNorm] = await Promise.all([
-      loadTex('/textures/BarkMat_diffuse.png', true, 1, 1),
-      loadTex('/textures/BarkMat_normal.png', false, 1, 1),
-      loadTex('/textures/BranchMat_diffuse_green.png', true, 1, 1),
-      loadTex('/textures/BranchMat_diffuse_orange.png', true, 1, 1),
-      loadTex('/textures/BranchMat_normal.png', false, 1, 1),
-    ]);
-
-    const proc = TreeTextureFactory.getTextures() || {};
-
-    TreeGenerator._textureCache = {
-      barkDiffuse: barkDiff || proc.barkDiffuse,
-      barkNormal: barkNorm || proc.barkNormal,
-      branchDiffuse: Math.random() < 0.5 ? branchDiffGreen : branchDiffOrange || proc.branchDiffuse,
-      branchNormal: branchNorm || proc.branchNormal,
-    };
-
+    TreeGenerator._textureCache = await TreeTextureFactory.loadTextures();
     return TreeGenerator._textureCache;
   }
 
@@ -411,7 +344,16 @@ export class TreeGenerator {
           }
         );
       } else {
-        const fbxLoader = new FBXLoader();
+        const treeManager = new THREE.LoadingManager();
+        treeManager.setURLModifier((url) => {
+          if (url.includes('BranchMat_diffuse.png')) return '/textures/BranchMat_diffuse_green.png';
+          if (url.includes('BranchMat_normal.png')) return '/textures/BranchMat_normal.png';
+          if (url.includes('BarkMat_diffuse.png')) return '/textures/BarkMat_diffuse.png';
+          if (url.includes('BarkMat_normal.png')) return '/textures/BarkMat_normal.png';
+          return url;
+        });
+        const fbxLoader = new FBXLoader(treeManager);
+        fbxLoader.setResourcePath('/textures/');
         fbxLoader.load(
           path,
           onLoaded,
@@ -450,19 +392,24 @@ export class TreeGenerator {
       const variants = [];
       for (const group of topLevelGroups) {
         const v = this._processVariant(group, path, filename, group.name);
-        if (v) variants.push(v);
+        if (v) {
+          if (Array.isArray(v)) variants.push(...v);
+          else variants.push(v);
+        }
       }
       return variants.length > 0 ? variants : null;
     }
 
     // Single model
     const single = this._processVariant(rootNode, path, filename, filename);
-    return single ? [single] : null;
+    if (!single) return null;
+    return Array.isArray(single) ? single : [single];
   }
 
   /**
    * Bakes transforms, welds vertices (70%+ memory & geometry reduction),
    * roots base at Y=0, centers horizontal footprint, and binds high-res PBR textures.
+   * Produces separate foliage variants (snow, green, orange) for live conifer trees.
    * @private
    */
   _processVariant(node, path, filename, variantName = '') {
@@ -504,11 +451,9 @@ export class TreeGenerator {
                        variantName.toLowerCase().includes('snag') ||
                        filename.toLowerCase().includes('dead');
 
-    const textures = TreeGenerator._textureCache || {};
-
-    // 2. Process each mesh geometry & bind PBR textures
+    // 2. Process each mesh geometry & identify branch vs trunk sub-meshes
     const geoms = [];
-    const materials = [];
+    const isBranchFlags = [];
 
     meshes.forEach((m) => {
       m.updateMatrixWorld(true);
@@ -530,15 +475,7 @@ export class TreeGenerator {
                        matName.includes('leaf') ||
                        matName.includes('leaves') ||
                        matName.includes('needle');
-
-      const sharedMats = TreeGenerator.getSharedMaterials();
-      let mat;
-      if (isBranch) {
-        mat = sharedMats.needles;
-      } else {
-        mat = isDeadTree ? sharedMats.deadBark : sharedMats.livingBark;
-      }
-      materials.push(mat);
+      isBranchFlags.push(isBranch);
     });
 
     // 3. Merge into a single multi-material geometry
@@ -559,13 +496,7 @@ export class TreeGenerator {
     let trunkSampleCount = 0;
 
     for (let idx = 0; idx < meshes.length; idx++) {
-      const m = meshes[idx];
-      const matName = (m.material?.name || m.name || '').toLowerCase();
-      const isBranch = matName.includes('branch') ||
-                       matName.includes('leaf') ||
-                       matName.includes('leaves') ||
-                       matName.includes('needle');
-
+      const isBranch = isBranchFlags[idx];
       // If separate trunk meshes exist, measure only non-branch meshes.
       // If all meshes are unified (e.g. dead snag), measure trunk region near base.
       if (isBranch && meshes.length > 1) continue;
@@ -595,16 +526,46 @@ export class TreeGenerator {
     // Clamp to realistic tree trunk bounds (0.15m to 0.45m in unscaled base model units)
     const trunkRadius = Math.max(0.15, Math.min(0.45, measuredRadius));
 
-    return {
-      name: variantName || filename,
-      path,
-      category: isDeadTree ? 'snag' : 'pine',
-      isDead: isDeadTree,
-      modelHeight: Math.max(0.5, actualHeight),
-      trunkRadius,
-      geometry: finalGeom,
-      materials: materials.length === 1 ? materials[0] : materials,
-    };
+    const sharedMats = TreeGenerator.getSharedMaterials();
+
+    // If dead snag or no branch sub-meshes present, return single snag model
+    if (isDeadTree || !isBranchFlags.some(Boolean)) {
+      const mats = meshes.map(() => sharedMats.deadBark);
+      return [{
+        name: variantName || filename,
+        path,
+        category: 'snag',
+        isDead: true,
+        modelHeight: Math.max(0.5, actualHeight),
+        trunkRadius,
+        geometry: finalGeom,
+        materials: mats.length === 1 ? mats[0] : mats,
+      }];
+    }
+
+    // Live pine tree: generate 3 foliage variations (snow, green, orange)
+    // All 3 variations share the exact same finalGeom to eliminate memory overhead
+    const foliageConfigs = [
+      { id: 'snow', suffix: '_snow', needleMat: sharedMats.needlesSnow },
+      { id: 'green', suffix: '_green', needleMat: sharedMats.needlesGreen },
+      { id: 'orange', suffix: '_orange', needleMat: sharedMats.needlesOrange },
+    ];
+
+    return foliageConfigs.map((cfg) => {
+      const mats = isBranchFlags.map((isBranch) => (isBranch ? cfg.needleMat : sharedMats.livingBark));
+      return {
+        name: `${variantName || filename}${cfg.suffix}`,
+        baseName: variantName || filename,
+        foliageType: cfg.id,
+        path,
+        category: 'pine',
+        isDead: false,
+        modelHeight: Math.max(0.5, actualHeight),
+        trunkRadius,
+        geometry: finalGeom,
+        materials: mats.length === 1 ? mats[0] : mats,
+      };
+    });
   }
 
   /**
