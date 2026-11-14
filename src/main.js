@@ -45,6 +45,7 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   1500
 );
+scene.add(camera);
 
 // --- Renderer ---
 const canvas = document.querySelector('#webgl');
@@ -137,12 +138,15 @@ window.__GAME = { scene, camera, renderer, player, terrainManager };
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
 
-// Coordinate asset loading: wait until skybox, tree pack models, and textures finish
+// Snowboard POV rig model loading promise
+const boardPromise = player.snowboardRig.load();
+
+// Coordinate asset loading: wait until skybox, tree pack models, textures, and snowboard finish
 const MAX_LOAD_TIMEOUT = 12000;
 const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
 
 Promise.race([
-  Promise.all([skyboxPromise, treesPromise]),
+  Promise.all([skyboxPromise, treesPromise, boardPromise]),
   timeoutPromise
 ]).then(() => {
   // If skybox loaded, ensure tree impostors have environment reflection

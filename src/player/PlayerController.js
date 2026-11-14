@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SnowboardRig } from './SnowboardRig.js';
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -102,6 +103,9 @@ export class PlayerController {
     this.prevRightY = 0;
 
     this.onModeChange = null;
+
+    // Snowboard placed directly under player
+    this.snowboardRig = new SnowboardRig(this.terrainManager?.scene);
 
     this._initInput();
 
@@ -364,6 +368,9 @@ export class PlayerController {
     if (this.onModeChange) {
       this.onModeChange(this.mode);
     }
+    if (this.snowboardRig) {
+      this.snowboardRig.update(0.016, this);
+    }
   }
 
   getSpeedKmh() {
@@ -408,6 +415,9 @@ export class PlayerController {
       this.cameraY = this.position.y;
       this.camera.position.copy(this.position);
       this._updateCameraRotation();
+      if (this.snowboardRig) {
+        this.snowboardRig.update(dt, this);
+      }
       return;
     }
 
@@ -435,6 +445,11 @@ export class PlayerController {
     } else if (Math.abs(this.camera.fov - this.baseFov) > 0.01) {
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, this.baseFov, 6.0, dt);
       this.camera.updateProjectionMatrix();
+    }
+
+    // Dynamic first-person snowboard POV motion update
+    if (this.snowboardRig) {
+      this.snowboardRig.update(dt, this);
     }
   }
 
