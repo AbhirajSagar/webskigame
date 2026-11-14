@@ -390,6 +390,48 @@ export class TerrainManager {
     return this.heightmap.getNormal(worldX, worldZ);
   }
 
+  /**
+   * Retrieves tree trunk colliders near the specified world position.
+   * Efficiently queries only the terrain chunks intersecting the search circle.
+   * Reuses an internal array by default to guarantee ZERO garbage collection per frame.
+   * @param {number} px - World X coordinate
+   * @param {number} pz - World Z coordinate
+   * @param {number} [searchRadius=5.0] - Search radius in meters
+   * @param {Array} [outResults] - Optional destination array
+   * @returns {Array<Object>} Array of tree trunk colliders { x, y, z, radius, height }
+   */
+  getNearbyTrunkColliders(px, pz, searchRadius = 5.0, outResults = null) {
+    if (!outResults) {
+      if (!this._cachedNearbyTrunks) this._cachedNearbyTrunks = [];
+      outResults = this._cachedNearbyTrunks;
+    }
+    outResults.length = 0;
+
+    const minChunkX = Math.floor((px - searchRadius) / this.chunkSize);
+    const maxChunkX = Math.floor((px + searchRadius) / this.chunkSize);
+    const minChunkZ = Math.floor((pz - searchRadius) / this.chunkSize);
+    const maxChunkZ = Math.floor((pz + searchRadius) / this.chunkSize);
+
+    for (let cx = minChunkX; cx <= maxChunkX; cx++) {
+      for (let cz = minChunkZ; cz <= maxChunkZ; cz++) {
+        const chunk = this.loadedChunks.get(`${cx},${cz}`);
+        if (!chunk || !chunk.treeColliders) continue;
+
+        const colliders = chunk.treeColliders;
+        const count = colliders.length;
+        for (let i = 0; i < count; i++) {
+          const t = colliders[i];
+          const dx = t.x - px;
+          if (dx > searchRadius || dx < -searchRadius) continue;
+          const dz = t.z - pz;
+          if (dz > searchRadius || dz < -searchRadius) continue;
+          outResults.push(t);
+        }
+      }
+    }
+    return outResults;
+  }
+
   getLoadedChunkCount() {
     return this.loadedChunks.size;
   }

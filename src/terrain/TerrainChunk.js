@@ -28,6 +28,7 @@ export class TerrainChunk {
     this.treeMesh3D = null;
     this.treeMeshImpostor = null;
     this.activeTreeLOD = null; // 0 = 3D (<= 65m), 1 = 4-poly cross-quad impostor (> 65m)
+    this.treeColliders = null;
     this.isDisposed = false;
 
     this.worldCenterX = (chunkX + 0.5) * size;
@@ -172,10 +173,11 @@ export class TerrainChunk {
       return;
     }
 
-    const { mesh3D, meshImpostor } = this.treeGenerator.generateChunkTrees(this.chunkX, this.chunkZ);
+    const { mesh3D, meshImpostor, treeColliders } = this.treeGenerator.generateChunkTrees(this.chunkX, this.chunkZ);
     if (!this.isDisposed) {
       this.treeMesh3D = mesh3D;
       this.treeMeshImpostor = meshImpostor;
+      this.treeColliders = treeColliders || [];
 
       if (scene) {
         if (this.treeMesh3D) scene.add(this.treeMesh3D);
@@ -324,6 +326,7 @@ export class TerrainChunk {
       this._disposeTreeMesh(this.treeMeshImpostor, scene);
       this.treeMeshImpostor = null;
     }
+    this.treeColliders = null;
     this.activeTreeLOD = null;
     this.buildTrees(scene);
   }
@@ -354,6 +357,7 @@ export class TerrainChunk {
   dispose(scene) {
     if (this.isDisposed) return;
     this.isDisposed = true;
+    this.treeColliders = null;
 
     if (this.mesh) {
       if (scene) {

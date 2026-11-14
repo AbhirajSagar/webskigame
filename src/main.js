@@ -45,7 +45,6 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   1500
 );
-scene.add(camera);
 
 // --- Renderer ---
 const canvas = document.querySelector('#webgl');
@@ -138,15 +137,12 @@ window.__GAME = { scene, camera, renderer, player, terrainManager };
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
 
-// Snowboard POV rig model loading promise
-const boardPromise = player.snowboardRig.load();
-
-// Coordinate asset loading: wait until skybox, tree pack models, textures, and snowboard finish
+// Coordinate asset loading: wait until skybox, tree pack models, and textures finish
 const MAX_LOAD_TIMEOUT = 12000;
 const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
 
 Promise.race([
-  Promise.all([skyboxPromise, treesPromise, boardPromise]),
+  Promise.all([skyboxPromise, treesPromise]),
   timeoutPromise
 ]).then(() => {
   // If skybox loaded, ensure tree impostors have environment reflection
@@ -195,7 +191,8 @@ const shadowTexelSize = (2 * shadowCoverage) / 512;
 // Pre-warm WebGL shader pipelines to prevent initial frame compilation hitch
 renderer.compile(scene, camera);
 
-function animate() {
+function animate() 
+{
   requestAnimationFrame(animate);
 
   // Delta time clamping prevents physics tunneling and loading spikes after tab switch / hitches
@@ -210,9 +207,8 @@ function animate() {
   // focusing resolution where the camera looks and culling wasted off-screen shadows behind player
   camera.getWorldDirection(forwardDir);
   forwardDir.y = 0;
-  if (forwardDir.lengthSq() > 0.001) {
-    forwardDir.normalize();
-  }
+  if (forwardDir.lengthSq() > 0.001) forwardDir.normalize();
+
   shadowCenter.copy(player.position).addScaledVector(forwardDir, 25);
 
   // Discrete texel grid snapping: locks shadow map coordinates to whole texels,

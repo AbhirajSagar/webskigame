@@ -553,12 +553,54 @@ export class TreeGenerator {
 
     const actualHeight = finalGeom.boundingBox.max.y - finalGeom.boundingBox.min.y;
 
+    // Calculate trunk-only collision radius (excludes branches, foliage & needles)
+    let maxTrunkDistSq = 0;
+    let trunkSampleCount = 0;
+
+    for (let idx = 0; idx < meshes.length; idx++) {
+      const m = meshes[idx];
+      const matName = (m.material?.name || m.name || '').toLowerCase();
+      const isBranch = matName.includes('branch') ||
+                       matName.includes('leaf') ||
+                       matName.includes('leaves') ||
+                       matName.includes('needle');
+
+      // If separate trunk meshes exist, measure only non-branch meshes.
+      // If all meshes are unified (e.g. dead snag), measure trunk region near base.
+      if (isBranch && meshes.length > 1) continue;
+
+      const g = geoms[idx];
+      if (!g || !g.attributes.position) continue;
+
+      const pos = g.attributes.position;
+      // Sample vertices near the trunk base (between 0.2m and 1.8m above ground)
+      for (let i = 0; i < pos.count; i++) {
+        const y = pos.getY(i);
+        if (y >= 0.2 && y <= 1.8) {
+          const x = pos.getX(i);
+          const z = pos.getZ(i);
+          const distSq = x * x + z * z;
+          if (distSq > maxTrunkDistSq) {
+            maxTrunkDistSq = distSq;
+          }
+          trunkSampleCount++;
+        }
+      }
+    }
+
+    let measuredRadius = (trunkSampleCount > 0 && maxTrunkDistSq > 0)
+      ? Math.sqrt(maxTrunkDistSq)
+      : 0.22;
+    // Clamp to realistic tree trunk bounds (0.15m to 0.45m in unscaled base model units)
+    const trunkRadius = Math.max(0.15, Math.min(0.45, measuredRadius));
+
     return {
       name: variantName || filename,
       path,
       category: isDeadTree ? 'snag' : 'pine',
       isDead: isDeadTree,
       modelHeight: Math.max(0.5, actualHeight),
+      trunkRadius,
       geometry: finalGeom,
       materials: materials.length === 1 ? materials[0] : materials,
     };
@@ -670,12 +712,13 @@ export class TreeGenerator {
     }
 
     if (instancesByModel.size === 0) {
-      return { mesh3D: null, meshImpostor: null };
+      return { mesh3D: null, meshImpostor: null, treeColliders: [] };
     }
 
     const dummy = new THREE.Object3D();
     const createdMeshes3D = [];
     const createdMeshesImp = [];
+    const treeColliders = [];
 
     for (const [modelData, instances] of instancesByModel.entries()) {
       if (instances.length === 0) continue;
@@ -729,6 +772,15 @@ export class TreeGenerator {
         if (instMeshImp) {
           instMeshImp.setMatrixAt(i, dummy.matrix);
         }
+
+        // Record trunk-only collider for physics (branches and foliage are non-collidable)
+        treeColliders.push({
+          x: inst.x,
+          y: inst.y,
+          z: inst.z,
+          radius: (modelData.trunkRadius || 0.22) * scale,
+          height: (modelData.modelHeight || 8.0) * scale,
+        });
       }
 
       instMesh3D.instanceMatrix.needsUpdate = true;
@@ -771,6 +823,7 @@ export class TreeGenerator {
     return {
       mesh3D: finalMesh3D,
       meshImpostor: finalMeshImp,
+      treeColliders,
     };
   }
 
@@ -797,8 +850,12 @@ export class TreeGenerator {
     const dummy = new THREE.Object3D();
 
     for (const chunk of chunks) {
+      if (chunk.treeColliders) {
+        chunk.treeColliders.length = 0;
+      }
       const treeObjects = [chunk.treeMesh3D, chunk.treeMeshImpostor].filter(Boolean);
       for (const treeObj of treeObjects) {
+        const isPrimary3D = (treeObj === chunk.treeMesh3D);
         const meshes = treeObj.isInstancedMesh ? [treeObj] : (treeObj.isGroup ? treeObj.children : []);
         for (const instMesh of meshes) {
           if (!instMesh || !instMesh.isInstancedMesh || !instMesh.userData.instances) continue;
@@ -807,6 +864,9 @@ export class TreeGenerator {
 
           const cfg = this.getTreeConfig(modelName);
           const instances = instMesh.userData.instances;
+          const modelData = this.loadedModels.find(m => m.name === modelName);
+          const baseRad = modelData?.trunkRadius || 0.22;
+          const baseHeight = modelData?.modelHeight || 8.0;
 
           const minS = Math.min(cfg.minScale, cfg.maxScale);
           const maxS = Math.max(cfg.minScale, cfg.maxScale);
@@ -829,6 +889,16 @@ export class TreeGenerator {
             dummy.scale.set(scale, scale, scale);
             dummy.updateMatrix();
             instMesh.setMatrixAt(i, dummy.matrix);
+
+            if (isPrimary3D && chunk.treeColliders) {
+              chunk.treeColliders.push({
+                x: inst.x,
+                y: inst.y,
+                z: inst.z,
+                radius: baseRad * scale,
+                height: baseHeight * scale,
+              });
+            }
           }
 
           instMesh.instanceMatrix.needsUpdate = true;

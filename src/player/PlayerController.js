@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { SnowboardRig } from './SnowboardRig.js';
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -85,6 +84,14 @@ export class PlayerController {
     // Base camera FOV
     this.baseFov = camera.fov || 65;
 
+    // Camera shake state (light, subtle grounded tremor on landing)
+    this.trauma = 0.0;
+    this.shakeTime = 0.0;
+
+    // Tree trunk collision parameters (canopy and branches are non-collidable)
+    this.treeCollisionRadius = 0.35;
+    this._nearbyTrunks = [];
+
     // Input state: Full 6-DOF controls for Fly spectator mode & Skiing
     this.keys = {
       forward: false,
@@ -103,9 +110,6 @@ export class PlayerController {
     this.prevRightY = 0;
 
     this.onModeChange = null;
-
-    // Snowboard placed directly under player
-    this.snowboardRig = new SnowboardRig(this.terrainManager?.scene);
 
     this._initInput();
 
@@ -350,6 +354,7 @@ export class PlayerController {
   _updateCameraRotation() {
     _scratchEuler.x = this.pitch;
     _scratchEuler.y = this.yaw;
+    _scratchEuler.z = 0;
     this.camera.quaternion.setFromEuler(_scratchEuler);
   }
 
@@ -367,9 +372,6 @@ export class PlayerController {
     }
     if (this.onModeChange) {
       this.onModeChange(this.mode);
-    }
-    if (this.snowboardRig) {
-      this.snowboardRig.update(0.016, this);
     }
   }
 
@@ -415,9 +417,6 @@ export class PlayerController {
       this.cameraY = this.position.y;
       this.camera.position.copy(this.position);
       this._updateCameraRotation();
-      if (this.snowboardRig) {
-        this.snowboardRig.update(dt, this);
-      }
       return;
     }
 
@@ -438,18 +437,34 @@ export class PlayerController {
     if (!Number.isFinite(this.camera.fov)) this.camera.fov = this.baseFov;
 
     if (this.mode === 'ski') {
+      // Subtle, safe camera shake on landing
+      if (this.trauma > 0.001) {
+        this.trauma = Math.max(0, this.trauma - dt * 3.5);
+        this.shakeTime += dt;
+        const shake = this.trauma * this.trauma;
+        const t = this.shakeTime * 38.0;
+        const shakeX = (Math.sin(t * 1.7) + Math.cos(t * 3.1) * 0.5) * 0.045 * shake;
+        const shakeY = (Math.cos(t * 1.5) + Math.sin(t * 2.9) * 0.5) * 0.045 * shake;
+        this.camera.position.set(this.position.x + shakeX, this.cameraY + shakeY, this.position.z);
+      } else {
+        this.camera.position.set(this.position.x, this.cameraY, this.position.z);
+      }
+
+      // Camera orientation
+      this._updateCameraRotation();
+
       const safeSpeed = Number.isFinite(this.speed) ? this.speed : 0;
       const targetFov = this.baseFov + Math.min(12, (safeSpeed / 45.0) * 12);
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 4.0, dt);
       this.camera.updateProjectionMatrix();
-    } else if (Math.abs(this.camera.fov - this.baseFov) > 0.01) {
-      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, this.baseFov, 6.0, dt);
-      this.camera.updateProjectionMatrix();
-    }
+    } else {
+      this.camera.position.copy(this.position);
+      this._updateCameraRotation();
 
-    // Dynamic first-person snowboard POV motion update
-    if (this.snowboardRig) {
-      this.snowboardRig.update(dt, this);
+      if (Math.abs(this.camera.fov - this.baseFov) > 0.01) {
+        this.camera.fov = THREE.MathUtils.damp(this.camera.fov, this.baseFov, 6.0, dt);
+        this.camera.updateProjectionMatrix();
+      }
     }
   }
 
@@ -472,6 +487,9 @@ export class PlayerController {
     const currentGroundHeight = this.terrainManager.getHeightAt(this.position.x, this.position.z);
     const targetEyeY = currentGroundHeight + this.eyeHeight;
     const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z);
+
+    const prevX = this.position.x;
+    const prevZ = this.position.z;
 
     if (this.isGrounded) {
       this.airTime = 0.0;
@@ -534,6 +552,15 @@ export class PlayerController {
       this.velocity.x = _scratchForwardXZ.x * dampedForward + _scratchRightXZ.x * dampedLateral;
       this.velocity.z = _scratchForwardXZ.z * dampedForward + _scratchRightXZ.z * dampedLateral;
 
+      // Active jump pop (Spacebar) off lips, ramps, or flat snow
+      if (this.keys.up) {
+        this.velocity.y = Math.max(this.velocity.y + this.jumpForce, this.jumpForce);
+        this.isGrounded = false;
+        this.airTime = 0.05;
+        this.position.y += 0.12;
+        this.keys.up = false; // consume jump press
+      }
+
       // 5. Ground Contact & Slope Following
       const nextX = this.position.x + this.velocity.x * dt;
       const nextZ = this.position.z + this.velocity.z * dt;
@@ -594,8 +621,10 @@ export class PlayerController {
 
       if (this.position.y <= testTargetY) {
         // Touchdown on snow!
+        const landAirTime = this.airTime;
         this.position.y = testTargetY;
         this.isGrounded = true;
+        this.airTime = 0.0;
 
         // Smooth landing momentum conservation:
         // Project incoming 3D flight velocity onto the landing slope normal
@@ -609,8 +638,16 @@ export class PlayerController {
 
         // Slight landing compression dampener
         this.cameraY = testTargetY - 0.25;
+
+        // Subtle camera shake if landing after noticeable airtime
+        if (landAirTime >= 0.15) {
+          this.trauma = Math.min(0.35, (landAirTime - 0.1) * 0.25);
+        }
       }
     }
+
+    // 7. Solid Tree Trunk Collision (Branches & foliage are non-collidable pass-through)
+    this._resolveTrunkCollisions(prevX, prevZ);
 
     // Clamp terminal downhill speed
     const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
@@ -620,10 +657,119 @@ export class PlayerController {
       this.velocity.z *= factor;
     }
 
-    // Knee suspension damping: smooths micro-terrain bumps without jitter
+    // Knee suspension damping: tracks terrain elevation smoothly without micro-jitter
     if (!Number.isFinite(this.cameraY)) this.cameraY = this.position.y;
     this.cameraY = THREE.MathUtils.damp(this.cameraY, this.position.y, 18.0, dt);
-    this.camera.position.set(this.position.x, this.cameraY, this.position.z);
+  }
+
+  /**
+   * Resolves physical collision against solid tree trunks.
+   * Tree branches, foliage, needles, and canopies are strictly pass-through (non-collidable).
+   * Runs in microseconds using analytical cylinder sweeps with zero garbage collection.
+   * @param {number} prevX - Position X prior to frame integration
+   * @param {number} prevZ - Position Z prior to frame integration
+   * @private
+   */
+  _resolveTrunkCollisions(prevX, prevZ) {
+    if (!this.terrainManager || !this.terrainManager.getNearbyTrunkColliders) return;
+
+    const nearbyTrunks = this.terrainManager.getNearbyTrunkColliders(
+      this.position.x,
+      this.position.z,
+      4.0,
+      this._nearbyTrunks
+    );
+
+    if (!nearbyTrunks || nearbyTrunks.length === 0) return;
+
+    const playerRadius = this.treeCollisionRadius || 0.35;
+    const playerFeetY = this.position.y - this.eyeHeight;
+    const playerHeadY = this.position.y + 0.3;
+
+    // 2-pass iterative solver handles multiple close-proximity trees or corner squeezes
+    for (let pass = 0; pass < 2; pass++) {
+      let hadCollision = false;
+
+      for (let i = 0; i < nearbyTrunks.length; i++) {
+        const t = nearbyTrunks[i];
+
+        // 1. Vertical range check: allow player to jump clean over trees or fly underneath high roots
+        const trunkBottom = t.y - 0.5;
+        const trunkTop = t.y + t.height;
+        if (playerFeetY > trunkTop || playerHeadY < trunkBottom) {
+          continue;
+        }
+
+        // 2. Continuous swept check from prev position to current position
+        const segX = this.position.x - prevX;
+        const segZ = this.position.z - prevZ;
+        const segLenSq = segX * segX + segZ * segZ;
+        let tParam = 0;
+        if (segLenSq > 1e-6) {
+          tParam = ((t.x - prevX) * segX + (t.z - prevZ) * segZ) / segLenSq;
+          tParam = Math.max(0, Math.min(1, tParam));
+        }
+        const closeX = prevX + tParam * segX;
+        const closeZ = prevZ + tParam * segZ;
+
+        const dx = closeX - t.x;
+        const dz = closeZ - t.z;
+        const distSq = dx * dx + dz * dz;
+        const minDistance = t.radius + playerRadius;
+
+        if (distSq < minDistance * minDistance) {
+          hadCollision = true;
+          let dist = Math.sqrt(distSq);
+          let nx = 0;
+          let nz = 0;
+
+          if (dist > 1e-4) {
+            nx = dx / dist;
+            nz = dz / dist;
+          } else {
+            // Player is exactly centered on trunk axis; push opposite of velocity
+            const spd = Math.hypot(this.velocity.x, this.velocity.z);
+            if (spd > 0.01) {
+              nx = -this.velocity.x / spd;
+              nz = -this.velocity.z / spd;
+            } else {
+              nx = 1;
+              nz = 0;
+            }
+          }
+
+          // Push player position outside the solid trunk cylinder
+          this.position.x = t.x + nx * minDistance;
+          this.position.z = t.z + nz * minDistance;
+
+          // Velocity deflection: scrub normal penetration while preserving glancing tangential speed
+          const vn = this.velocity.x * nx + this.velocity.z * nz;
+          if (vn < 0) {
+            const vtX = this.velocity.x - vn * nx;
+            const vtZ = this.velocity.z - vn * nz;
+
+            // Restitution (elastic bounce off tree trunk) and glance friction
+            const bounce = 0.25;
+            const friction = 0.65;
+
+            this.velocity.x = vtX * friction - nx * vn * bounce;
+            this.velocity.z = vtZ * friction - nz * vn * bounce;
+
+            // Subtle trauma on hard tree impacts without excessive disorientation
+            if (Math.abs(vn) > 4.0) {
+              this.trauma = Math.min(0.4, this.trauma + Math.min(0.25, Math.abs(vn) * 0.015));
+            }
+          }
+        }
+      }
+
+      if (!hadCollision) break;
+    }
+
+    // Keep grounded player locked to terrain elevation after horizontal push-out
+    if (this.isGrounded) {
+      this.position.y = this.terrainManager.getHeightAt(this.position.x, this.position.z) + this.eyeHeight;
+    }
   }
 
   /**
