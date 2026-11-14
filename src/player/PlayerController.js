@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CharacterRig } from './CharacterRig.js';
+import { Snowboard } from './Snowboard.js';
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -114,8 +114,8 @@ export class PlayerController {
 
     this.onModeChange = null;
 
-    // First-person 3D character rig (character.fbx)
-    this.characterRig = new CharacterRig(this.terrainManager?.scene);
+    // Grounded snowboard rig aligned with terrain surface normal
+    this.snowboard = new Snowboard(this.terrainManager?.scene);
 
     this._initInput();
 
@@ -376,8 +376,8 @@ export class PlayerController {
     if (this.onModeChange) {
       this.onModeChange(this.mode);
     }
-    if (this.characterRig) {
-      this.characterRig.update(0.016, this);
+    if (this.snowboard) {
+      this.snowboard.update(0.016, this);
     }
   }
 
@@ -423,8 +423,8 @@ export class PlayerController {
       this.cameraY = this.position.y;
       this.camera.position.copy(this.position);
       this._updateCameraRotation();
-      if (this.characterRig) {
-        this.characterRig.update(dt, this);
+      if (this.snowboard) {
+        this.snowboard.update(dt, this);
       }
       return;
     }
@@ -476,16 +476,16 @@ export class PlayerController {
       }
     }
 
-    // Keep 3D character body and skis positioned with camera at head position
-    if (this.characterRig) {
-      this.characterRig.update(dt, this);
+    // Keep snowboard positioned on ground with terrain surface normal alignment
+    if (this.snowboard) {
+      this.snowboard.update(dt, this);
     }
   }
 
   dispose() {
-    if (this.characterRig) {
-      this.characterRig.dispose();
-      this.characterRig = null;
+    if (this.snowboard) {
+      this.snowboard.dispose();
+      this.snowboard = null;
     }
   }
 
