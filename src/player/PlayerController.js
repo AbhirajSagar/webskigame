@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CharacterRig } from './CharacterRig.js';
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -45,7 +46,7 @@ export class PlayerController {
     // Physical state
     this.position = new THREE.Vector3(0, 20, 0);
     this.velocity = new THREE.Vector3(0, 0, 0);
-    this.eyeHeight = 1.85; // Natural skier stance
+    this.eyeHeight = 1.70; // Natural skier stance aligned with character model head position
     this.cameraY = 20;
 
     // Modes: 'ski' (downhill physics) | 'fly' (free spectator)
@@ -110,6 +111,9 @@ export class PlayerController {
     this.prevRightY = 0;
 
     this.onModeChange = null;
+
+    // First-person 3D character rig (character.fbx)
+    this.characterRig = new CharacterRig(this.terrainManager?.scene);
 
     this._initInput();
 
@@ -373,6 +377,9 @@ export class PlayerController {
     if (this.onModeChange) {
       this.onModeChange(this.mode);
     }
+    if (this.characterRig) {
+      this.characterRig.update(0.016, this);
+    }
   }
 
   getSpeedKmh() {
@@ -417,6 +424,9 @@ export class PlayerController {
       this.cameraY = this.position.y;
       this.camera.position.copy(this.position);
       this._updateCameraRotation();
+      if (this.characterRig) {
+        this.characterRig.update(dt, this);
+      }
       return;
     }
 
@@ -465,6 +475,18 @@ export class PlayerController {
         this.camera.fov = THREE.MathUtils.damp(this.camera.fov, this.baseFov, 6.0, dt);
         this.camera.updateProjectionMatrix();
       }
+    }
+
+    // Keep 3D character body and skis positioned with camera at head position
+    if (this.characterRig) {
+      this.characterRig.update(dt, this);
+    }
+  }
+
+  dispose() {
+    if (this.characterRig) {
+      this.characterRig.dispose();
+      this.characterRig = null;
     }
   }
 

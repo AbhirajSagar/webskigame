@@ -42,7 +42,7 @@ scene.fog = new THREE.Fog(fogColor, 30, 260);
 const camera = new THREE.PerspectiveCamera(
   65,
   window.innerWidth / window.innerHeight,
-  0.1,
+  0.05,
   1500
 );
 
@@ -137,12 +137,15 @@ window.__GAME = { scene, camera, renderer, player, terrainManager };
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
 
-// Coordinate asset loading: wait until skybox, tree pack models, and textures finish
+// First-person 3D character model loading promise
+const characterPromise = player.characterRig.load();
+
+// Coordinate asset loading: wait until skybox, tree pack models, character, and textures finish
 const MAX_LOAD_TIMEOUT = 12000;
 const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
 
 Promise.race([
-  Promise.all([skyboxPromise, treesPromise]),
+  Promise.all([skyboxPromise, treesPromise, characterPromise]),
   timeoutPromise
 ]).then(() => {
   // If skybox loaded, ensure tree impostors have environment reflection
