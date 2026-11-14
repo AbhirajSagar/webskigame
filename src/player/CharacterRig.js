@@ -2,10 +2,14 @@ import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 
 // Pre-allocated scratch objects for zero-allocation 60 FPS update loop
-const _scratchEuler = new THREE.Euler(0, 0, 0, 'YXZ');
-const _scratchQuat = new THREE.Quaternion();
+const _scratchNormal = new THREE.Vector3();
+const _scratchCamForward = new THREE.Vector3();
+const _scratchCharX = new THREE.Vector3();
+const _scratchCharY = new THREE.Vector3();
+const _scratchCharZ = new THREE.Vector3();
+const _scratchBasisMatrix = new THREE.Matrix4();
+const _scratchTargetQuat = new THREE.Quaternion();
 const _scratchHeadOffset = new THREE.Vector3();
-const _scratchForwardXZ = new THREE.Vector3();
 
 /**
  * CharacterRig
@@ -41,6 +45,7 @@ export class CharacterRig {
     this.slopePitch = 0.0;
     this.carveRoll = 0.0;
     this.tuckOffset = 0.0;
+    this._initializedQuat = false;
 
     // Component mesh references for animation and alignment
     this.skiL = null;
@@ -135,64 +140,64 @@ export class CharacterRig {
 
   /**
    * Updates the character transform so the camera sits directly at the head position.
-   * Conforms body and skis to terrain slope, lean into carve turns, and tuck dynamics.
+   * Directly aligns the character's orientation (up vector) to the terrain surface normal.
    * @param {number} dt - Delta time in seconds
    * @param {PlayerController} player - Active player controller instance
    */
   update(dt, player) {
     if (!this.isLoaded || !this.root) return;
 
-    // 1. Compute terrain slope pitch along player's look direction
-    const lookDirX = -Math.sin(player.yaw);
-    const lookDirZ = -Math.cos(player.yaw);
-
-    let targetSlopePitch = 0.0;
-    if (player.isGrounded && player.terrainManager) {
-      // Sample terrain elevation at front of skis (+0.8m ahead) and back (-0.8m behind)
-      const tipX = player.position.x + lookDirX * 0.8;
-      const tipZ = player.position.z + lookDirZ * 0.8;
-      const tailX = player.position.x - lookDirX * 0.8;
-      const tailZ = player.position.z - lookDirZ * 0.8;
-
-      const tipY = player.terrainManager.getHeightAt(tipX, tipZ);
-      const tailY = player.terrainManager.getHeightAt(tailX, tailZ);
-
-      // Pitch angle conforms skis flush against downhill mountain slope
-      targetSlopePitch = Math.atan2(tipY - tailY, 1.6);
+    // 1. Surface normal at the exact point on the terrain where the character is standing
+    const rawNorm = player.terrainManager?.getNormalAt(player.position.x, player.position.z) || { x: 0, y: 1, z: 0 };
+    _scratchNormal.set(rawNorm.x, rawNorm.y, rawNorm.z);
+    if (_scratchNormal.lengthSq() > 0.0001) {
+      _scratchNormal.normalize();
     } else {
-      // Airborne ballistic flight trajectory alignment
-      const horizSpeed = Math.hypot(player.velocity.x, player.velocity.z);
-      if (horizSpeed > 1.0) {
-        targetSlopePitch = Math.atan2(player.velocity.y, horizSpeed) * 0.55;
-      }
+      _scratchNormal.set(0, 1, 0);
     }
 
-    this.slopePitch = THREE.MathUtils.damp(this.slopePitch, targetSlopePitch, 14.0, dt);
+    // 2. Camera horizontal look direction (yaw)
+    _scratchCamForward.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
 
-    // 2. Dynamic Carving Bank / Roll
-    const rightDirX = Math.cos(player.yaw);
-    const rightDirZ = -Math.sin(player.yaw);
-    const lateralSpeed = player.velocity.x * rightDirX + player.velocity.z * rightDirZ;
-    const targetRoll = (lateralSpeed / 22.0) * 0.22; // Lean into carving turn up to ~12 deg
-    this.carveRoll = THREE.MathUtils.damp(this.carveRoll, targetRoll, 10.0, dt);
+    // 3. Project look direction onto the terrain tangent plane (perpendicular to surface normal)
+    const dot = _scratchCamForward.dot(_scratchNormal);
+    _scratchCharZ.copy(_scratchCamForward).addScaledVector(_scratchNormal, -dot);
+    if (_scratchCharZ.lengthSq() > 0.0001) {
+      _scratchCharZ.normalize();
+    } else {
+      _scratchCharZ.set(0, 0, 1);
+    }
 
-    // 3. Tuck / Crouch Stance
+    // 4. Construct orthonormal basis where UP (+Y) aligns with the terrain surface normal:
+    // Local +Y: Exact terrain normal
+    // Local +Z: Forward tangent along the slope surface
+    // Local +X: Cross product (perpendicular across ski stance)
+    _scratchCharY.copy(_scratchNormal);
+    _scratchCharX.crossVectors(_scratchCharY, _scratchCharZ).normalize();
+
+    _scratchBasisMatrix.makeBasis(_scratchCharX, _scratchCharY, _scratchCharZ);
+    _scratchTargetQuat.setFromRotationMatrix(_scratchBasisMatrix);
+
+    // 5. Rotate character to normal: instant initialization on first frame, smooth damping during motion
+    if (!this._initializedQuat) {
+      this.root.quaternion.copy(_scratchTargetQuat);
+      this._initializedQuat = true;
+    } else {
+      this.root.quaternion.slerp(_scratchTargetQuat, Math.min(1.0, 22.0 * dt));
+    }
+
+    // 6. Tuck / Crouch Stance
     const isTucking = player.keys.forward || player.keys.sprint;
     const targetTuck = isTucking ? 0.06 : 0.0;
     this.tuckOffset = THREE.MathUtils.damp(this.tuckOffset, targetTuck, 8.0, dt);
 
-    // 4. Orientation: Character faces forward along camera yaw (+PI offset for FBX coordinate frame)
-    _scratchEuler.set(this.slopePitch, player.yaw + Math.PI, this.carveRoll, 'YXZ');
-    _scratchQuat.setFromEuler(_scratchEuler);
-    this.root.quaternion.copy(_scratchQuat);
-
-    // 5. Position: Anchor character so camera position exactly coincides with character head
+    // 7. Position: Anchor character so camera position exactly coincides with character head
     // worldHead = root.position + quat * (headOffset - tuckOffset)
     // => root.position = cameraPosition - quat * (headOffset - tuckOffset)
     _scratchHeadOffset.copy(this.headOffset);
     _scratchHeadOffset.y -= this.tuckOffset;
     _scratchHeadOffset.z += this.tuckOffset * 0.5; // Slight athletic forward crouch
-    _scratchHeadOffset.applyQuaternion(_scratchQuat);
+    _scratchHeadOffset.applyQuaternion(this.root.quaternion);
 
     const camPos = player.camera.position;
     this.root.position.set(
@@ -201,8 +206,14 @@ export class CharacterRig {
       camPos.z - _scratchHeadOffset.z
     );
 
-    // 6. Dynamic Ski Edging: Bite steel edges into snow during hard carve turns
+    // 8. Dynamic Ski Edging: Bite steel edges into snow during hard carve turns
     if (this.skiL && this.skiR) {
+      const rightDirX = Math.cos(player.yaw);
+      const rightDirZ = -Math.sin(player.yaw);
+      const lateralSpeed = player.velocity.x * rightDirX + player.velocity.z * rightDirZ;
+      const targetRoll = (lateralSpeed / 22.0) * 0.22;
+      this.carveRoll = THREE.MathUtils.damp(this.carveRoll, targetRoll, 10.0, dt);
+
       const edgeAngle = -this.carveRoll * 0.45;
       this.skiL.rotation.z = edgeAngle;
       this.skiR.rotation.z = edgeAngle;
