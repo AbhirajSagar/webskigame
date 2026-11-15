@@ -5,10 +5,10 @@ import * as THREE from 'three';
  * Completely customizable and exportable as JSON.
  */
 export const DEFAULT_SNOW_CONFIG = {
-  // Chromatic Snow Palette
-  sunlitColor: '#c2c2c2',
-  shadowColor: '#519bf0',
-  creviceColor: '#3b444e',
+  // Chromatic Snow Palette (pure radiant alpine snow with sky-blue ambient shadows)
+  sunlitColor: '#f2f5f9',
+  shadowColor: '#4d88e8',
+  creviceColor: '#2b3644',
 
   // Slope & Wind Scour
   slopeMin: 0.42,
@@ -17,19 +17,19 @@ export const DEFAULT_SNOW_CONFIG = {
   peakScourEnd: 210,
   peakScourIntensity: 0.36,
 
-  // Surface & Roughness
-  snowNormalScale: 3.2,
-  snowRoughness: 0.8,
+  // Surface & Roughness (Strong 3D sastrugi & powder relief)
+  snowNormalScale: 4.2,
+  snowRoughness: 0.75,
 
-  // Crystal Sparkles
-  sparkleScale: 2.8,
-  sparkleIntensity: 1.1,
-  sparkleDistance: 48,
+  // Crystal Sparkles (Crisp alpine glints)
+  sparkleScale: 3.4,
+  sparkleIntensity: 1.6,
+  sparkleDistance: 64,
 
-  // SSS & Glancing Sheen
-  sssIntensity: 0.68,
-  sssColor: '#f9c58b',
-  sheenIntensity: 0.2,
+  // SSS & Glancing Sheen (Volumetric powder light scattering)
+  sssIntensity: 0.65,
+  sssColor: '#f9c687',
+  sheenIntensity: 0.35,
   sheenColor: '#ffffff',
 };
 
@@ -303,6 +303,7 @@ export class TerrainMaterialFactory {
         // Fragment-scope shared variables across chunks
         float g_snowFactor;
         vec3 g_worldSnowN;
+        float g_powderCrust;
         vec3 g_blending;
         float g_roughX, g_roughY, g_roughZ;
         vec3 g_nX, g_nY, g_nZ;
@@ -472,6 +473,53 @@ export class TerrainMaterialFactory {
         float snowFactor = clamp(slopeSnow - peakScour, 0.0, 1.0);
         g_snowFactor = snowFactor;
 
+        // =========================================================================
+        // 2a. MULTI-SCALE SNOW PERTURBATION & CAVITY AO (Sastrugi + Ripples + Powder)
+        // =========================================================================
+        vec3 wn = normalize(vCustomWorldNorm);
+        vec3 t = normalize(cross(wn, vec3(0.0, 0.0, 1.0)));
+        if (length(t) < 0.1) t = normalize(cross(wn, vec3(1.0, 0.0, 0.0)));
+        vec3 b = cross(wn, t);
+        mat3 tbn = mat3(t, b, wn);
+
+        // Layer 1: Macro wind sastrugi ridges (broad alpine snow drifts, ~20m-35m)
+        vec2 sastrugiDir = vec2(0.848, 0.530);
+        vec2 sastrugiCoord = vec2(
+          dot(vCustomWorldPos.xz, sastrugiDir) * 0.038,
+          dot(vCustomWorldPos.xz, vec2(-sastrugiDir.y, sastrugiDir.x)) * 0.015
+        );
+        vec3 sMap1 = texture2D(uSnowNormalMap, sastrugiCoord).xyz * 2.0 - 1.0;
+
+        // Layer 2: Meso wind ripples & tracks (~4m-6m)
+        vec2 rippleCoord = rotateUV(vCustomWorldPos.xz * 0.22, 1.18) + vec2(19.2, 43.7);
+        vec3 sMap2 = texture2D(uSnowNormalMap, rippleCoord).xyz * 2.0 - 1.0;
+        sMap2.xy = rotateUV(sMap2.xy, -1.18);
+
+        // Layer 3: Micro powder granules (~0.9m-1.2m, crisp near snow detail)
+        vec2 microCoord = rotateUV(vCustomWorldPos.xz * 0.95, 2.35) + vec2(47.1, 13.8);
+        vec3 sMap3 = texture2D(uSnowNormalMap, microCoord).xyz * 2.0 - 1.0;
+        sMap3.xy = rotateUV(sMap3.xy, -2.35);
+
+        // Layer 4: Ultra-fine crystalline crust (under player's boots, smoothly distance-faded)
+        float distToCam = length(uCameraPosition - vCustomWorldPos);
+        float nearWeight = clamp(1.0 - distToCam / 38.0, 0.0, 1.0);
+        vec2 fineCoord = rotateUV(vCustomWorldPos.xz * 2.8, 0.45) + vec2(83.5, 31.2);
+        vec3 sMap4 = texture2D(uSnowNormalMap, fineCoord).xyz * 2.0 - 1.0;
+        sMap4.xy = rotateUV(sMap4.xy, -0.45);
+
+        // Composite tangent perturbation with boosted normal strength (uSnowNormalScale)
+        vec2 snowPerturb = (
+          sMap1.xy * 0.45 +
+          sMap2.xy * 0.35 +
+          sMap3.xy * 0.32 +
+          sMap4.xy * (0.28 * nearWeight)
+        ) * uSnowNormalScale;
+
+        vec3 tangentSnowN = normalize(vec3(snowPerturb, 1.0));
+        vec3 worldSnowN = normalize(tbn * tangentSnowN);
+        g_worldSnowN = worldSnowN;
+        g_powderCrust = clamp((sMap2.x + sMap3.y) * 0.5 + 0.5, 0.0, 1.0);
+
         // Triplanar blend weights with sharpness exponent 4.0
         vec3 blending = pow(abs(vCustomWorldNorm), vec3(4.0));
         blending = max(blending, vec3(0.0001));
@@ -481,7 +529,7 @@ export class TerrainMaterialFactory {
         vec3 litRockColor = vec3(0.3);
 
         // =========================================================================
-        // 2. GATED ROCK SAMPLING (Early-exit when snow covers this pixel!)
+        // 2b. GATED ROCK SAMPLING (Early-exit when snow covers this pixel!)
         // =========================================================================
         if (snowFactor < 0.98) {
           vec3 colX = vec3(0.32), colY = vec3(0.32), colZ = vec3(0.32);
@@ -520,11 +568,14 @@ export class TerrainMaterialFactory {
         vec3 shadowSnowColor = uShadowSnowColor;
         vec3 creviceSnowColor = uCreviceSnowColor;
 
-        float sunExposure = clamp(dot(vCustomWorldNorm, uSunDirection) * 1.4, 0.0, 1.0);
-        float snowCrevice = smoothstep(0.35, 0.75, flow2);
+        // Micro-facet sun illumination from perturbed normal (creates crisp ridge lighting)
+        float microSun = clamp(dot(worldSnowN, uSunDirection) * 1.5, 0.0, 1.0);
+        // Sastrugi trough cavity ambient occlusion (cool blue shadows in snow furrows)
+        float cavityAO = clamp(tangentSnowN.z * 0.65 + 0.35, 0.0, 1.0);
 
-        vec3 ambientSnowColor = mix(shadowSnowColor, creviceSnowColor, snowCrevice * 0.35);
-        vec3 dynamicSnowAlbedo = mix(ambientSnowColor, sunlitSnowColor, sunExposure * 0.65 + 0.35);
+        vec3 ambientSnowColor = mix(shadowSnowColor, creviceSnowColor, (1.0 - cavityAO) * 0.60);
+        vec3 dynamicSnowAlbedo = mix(ambientSnowColor, sunlitSnowColor, microSun * 0.72 + 0.28);
+        dynamicSnowAlbedo *= mix(0.78, 1.0, cavityAO); // Organic depth in sastrugi hollows
 
         vec3 terrainColor = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
 
@@ -621,7 +672,7 @@ export class TerrainMaterialFactory {
 
         float rockRoughness = g_roughX * g_blending.x + g_roughY * g_blending.y + g_roughZ * g_blending.z;
         float snowSlope = 1.0 - clamp(vCustomWorldNorm.y, 0.0, 1.0);
-        float snowRoughness = mix(uSnowRoughness, uSnowRoughness * 0.74, snowSlope * 0.7);
+        float snowRoughness = mix(uSnowRoughness, uSnowRoughness * 0.70, g_powderCrust * 0.4 + snowSlope * 0.6);
         float terrainRoughness = mix(rockRoughness * 0.90 + 0.10, snowRoughness, g_snowFactor);
 
         // Live tweakable roughness (mirror reflection to frosty matte)
@@ -647,30 +698,7 @@ export class TerrainMaterialFactory {
         `
         #include <normal_fragment_maps>
 
-        // Snow TBN construction
-        vec3 wn = normalize(vCustomWorldNorm);
-        vec3 t = normalize(cross(wn, vec3(0.0, 0.0, 1.0)));
-        if (length(t) < 0.1) t = normalize(cross(wn, vec3(1.0, 0.0, 0.0)));
-        vec3 b = cross(wn, t);
-        mat3 tbn = mat3(t, b, wn);
-
-        // Multi-scale wind sastrugi normals
-        vec2 sastrugiDir = vec2(0.848, 0.530);
-        vec2 sastrugiCoord = vec2(
-          dot(vCustomWorldPos.xz, sastrugiDir) * 0.045,
-          dot(vCustomWorldPos.xz, vec2(-sastrugiDir.y, sastrugiDir.x)) * 0.016
-        );
-        vec2 rippleCoord = rotateUV(vCustomWorldPos.xz * 0.18, 1.18) + vec2(19.2, 43.7);
-
-        vec3 sMap1 = texture2D(uSnowNormalMap, sastrugiCoord).xyz * 2.0 - 1.0;
-        vec3 sMap2 = texture2D(uSnowNormalMap, rippleCoord).xyz * 2.0 - 1.0;
-        sMap2.xy = rotateUV(sMap2.xy, -1.18);
-
-        vec2 snowPerturb = (sMap1.xy * 0.65 + sMap2.xy * 0.45) * uSnowNormalScale;
-        vec3 tangentSnowN = normalize(vec3(snowPerturb, 1.0));
-        vec3 worldSnowN = normalize(tbn * tangentSnowN);
-        g_worldSnowN = worldSnowN;
-        vec3 viewSnowN = normalize((viewMatrix * vec4(worldSnowN, 0.0)).xyz);
+        vec3 viewSnowN = normalize((viewMatrix * vec4(g_worldSnowN, 0.0)).xyz);
 
         if (g_snowFactor < 0.98) {
           vec3 tPlaneX = vec3(0.0, 0.0, 1.0);

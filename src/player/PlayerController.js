@@ -73,7 +73,7 @@ export class PlayerController {
     this.tuckAirDrag = 0.010;    // Reduced drag when tucking
 
     // Height Cap Tuning (prevents player from going up too high into the air or above elevation)
-    this.maxAirborneHeight = 90;   // Temporarily expanded to 25m so user can test and observe natural jump heights
+    this.maxAirborneHeight = 115;   // Temporarily expanded to 25m so user can test and observe natural jump heights
     this.maxWorldHeight = Infinity; // Maximum world elevation ceiling (optional)
 
     // State flags
