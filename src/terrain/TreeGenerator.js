@@ -690,14 +690,14 @@ export class TreeGenerator {
 
         // 2. Elevation bounds: trees do not grow on high glacial peaks or submerged valleys
         const wy = this.heightmap.getHeight(wx, wz);
-        if (wy > 65.0 || wy < -12.0) continue;
+        if (wy > 175.0 || wy < -28.0) continue;
 
         // 3. Slope normal gating: trees cannot grow on steep rock cliffs
         const norm = this.heightmap.getNormal(wx, wz);
         if (norm.y < 0.72) continue; // max ~44 deg slope
 
         // 4. Biome noise density: negative values carve out open ski slopes (pistes)
-        const density = this.treeNoise.fbm(wx * 0.015, wz * 0.015, 2);
+        const density = this.treeNoise.fbm(wx * 0.006, wz * 0.006, 2);
         if (density < -0.02) continue; // Ski run clearing
 
         const prob = Math.min(1.0, (density + 0.02) * 1.6);
@@ -706,7 +706,7 @@ export class TreeGenerator {
         // 5. Timberline & Snag selection
         const snagHash = this._hash(chunkX, chunkZ, gx * 17, gz * 19);
         const isSnag = this.activeSnags.length > 0 &&
-                       ((wy > 42.0 && snagHash < 0.35) || (snagHash * 7 < 0.55));
+                       ((wy > 120.0 && snagHash < 0.35) || (snagHash * 7 < 0.55));
 
         let modelData;
         if (isSnag) {

@@ -72,6 +72,10 @@ export class PlayerController {
     this.airDrag = 0.025;        // Aerodynamic drag in flight
     this.tuckAirDrag = 0.010;    // Reduced drag when tucking
 
+    // Height Cap Tuning (prevents player from going up too high into the air or above elevation)
+    this.maxAirborneHeight = 90;   // Temporarily expanded to 25m so user can test and observe natural jump heights
+    this.maxWorldHeight = Infinity; // Maximum world elevation ceiling (optional)
+
     // State flags
     this.isGrounded = true;
     this.airTime = 0.0;
@@ -118,6 +122,10 @@ export class PlayerController {
     this.keyboardForward = false;
     this.touchForward = false;
     this.steerBank = 0.0;
+
+    // Camera input sensitivity
+    this.mouseSensitivity = 0.0022;
+    this.touchSensitivity = 0.0075; // Increased touch sensitivity for responsive mobile camera steering
 
     // Touch controls state
     this.leftTouchIds = new Set();
@@ -227,7 +235,7 @@ export class PlayerController {
 
     const onTouchMove = (e) => {
       if (e.cancelable) e.preventDefault();
-      const sensitivity = 0.0035;
+      const sensitivity = this.touchSensitivity;
 
       for (let i = 0; i < e.changedTouches.length; i++) {
         const touch = e.changedTouches[i];
@@ -303,7 +311,7 @@ export class PlayerController {
   }
 
   _onMouseMove(e) {
-    const sensitivity = 0.0022;
+    const sensitivity = this.mouseSensitivity;
 
     if (this.isPointerLocked) {
       this.yaw -= e.movementX * sensitivity;
@@ -322,6 +330,72 @@ export class PlayerController {
 
     // Clamp pitch: max looking down and up in FPS
     this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
+  }
+
+  setTouchSensitivity(val) {
+    if (typeof val === 'number' && val > 0) {
+      this.touchSensitivity = val;
+    }
+  }
+
+  getTouchSensitivity() {
+    return this.touchSensitivity;
+  }
+
+  setMouseSensitivity(val) {
+    if (typeof val === 'number' && val > 0) {
+      this.mouseSensitivity = val;
+    }
+  }
+
+  getMouseSensitivity() {
+    return this.mouseSensitivity;
+  }
+
+  /**
+   * Sets the height cap preventing the player from going up more than that.
+   * @param {number} val - Height cap value in meters
+   * @param {'air'|'world'} [type='air'] - 'air' bounds jump/air altitude above terrain; 'world' bounds absolute Y elevation
+   */
+  setHeightCap(val, type = 'air') {
+    if (typeof val === 'number' && val > 0) {
+      if (type === 'world') {
+        this.maxWorldHeight = val;
+      } else {
+        this.maxAirborneHeight = val;
+      }
+    }
+  }
+
+  /**
+   * Returns current height cap parameters.
+   * @returns {{ maxAirborneHeight: number, maxWorldHeight: number }}
+   */
+  getHeightCap() {
+    return {
+      maxAirborneHeight: this.maxAirborneHeight,
+      maxWorldHeight: this.maxWorldHeight,
+    };
+  }
+
+  setMaxAirborneHeight(val) {
+    if (typeof val === 'number' && val > 0) {
+      this.maxAirborneHeight = val;
+    }
+  }
+
+  getMaxAirborneHeight() {
+    return this.maxAirborneHeight;
+  }
+
+  setMaxWorldHeight(val) {
+    if (typeof val === 'number') {
+      this.maxWorldHeight = val;
+    }
+  }
+
+  getMaxWorldHeight() {
+    return this.maxWorldHeight;
   }
 
   setPitchLimits(minPitchDeg, maxPitchDeg) {
@@ -680,12 +754,38 @@ export class PlayerController {
         this.airTime = 0.05;
         this.position.x = nextX;
         this.position.z = nextZ;
+
+        // Cap upward takeoff velocity based on height cap
+        const maxTakeoffVy = Math.sqrt(2 * this.gravity * this.maxAirborneHeight);
+        if (this.velocity.y > maxTakeoffVy) {
+          this.velocity.y = maxTakeoffVy;
+        }
+
         this.position.y += this.velocity.y * dt;
+
+        // Enforce height cap immediately on takeoff
+        const currentGround = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+        if (this.position.y > currentGround + this.maxAirborneHeight) {
+          this.position.y = currentGround + this.maxAirborneHeight;
+          if (this.velocity.y > 0) this.velocity.y = 0;
+        }
+        if (this.maxWorldHeight !== Infinity && this.position.y > this.maxWorldHeight) {
+          this.position.y = this.maxWorldHeight;
+          if (this.velocity.y > 0) this.velocity.y = 0;
+        }
       } else {
-        this.position.x = nextX;
-        this.position.z = nextZ;
-        this.position.y = nextGroundHeight;
-        this.velocity.y = requiredSlopeVy;
+        // When grounded, respect maxWorldHeight if configured
+        if (this.maxWorldHeight !== Infinity && nextGroundHeight > this.maxWorldHeight) {
+          this.position.x = prevX;
+          this.position.z = prevZ;
+          this.velocity.x = 0;
+          this.velocity.z = 0;
+        } else {
+          this.position.x = nextX;
+          this.position.z = nextZ;
+          this.position.y = nextGroundHeight;
+          this.velocity.y = requiredSlopeVy;
+        }
       }
     } else {
       // Ballistic airtime trajectory
@@ -701,6 +801,24 @@ export class PlayerController {
       }
 
       this.position.addScaledVector(this.velocity, dt);
+
+      // Height cap enforcement: prevent player from going up higher than maxAirborneHeight above snow
+      const currentGroundY = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+      const capY = currentGroundY + this.maxAirborneHeight;
+      if (this.position.y > capY) {
+        this.position.y = capY;
+        if (this.velocity.y > 0) {
+          this.velocity.y = 0; // Stop upward velocity at height cap
+        }
+      }
+
+      // World elevation height cap enforcement (if set)
+      if (this.maxWorldHeight !== Infinity && this.position.y > this.maxWorldHeight) {
+        this.position.y = this.maxWorldHeight;
+        if (this.velocity.y > 0) {
+          this.velocity.y = 0;
+        }
+      }
 
       // Ground landing collision detection
       const testGroundY = this.terrainManager.getHeightAt(this.position.x, this.position.z);

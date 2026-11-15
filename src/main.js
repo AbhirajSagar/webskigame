@@ -36,7 +36,7 @@ const scene = new THREE.Scene();
 
 // Atmosphere / Horizon Fog to blend distant mountain peaks into the skybox
 const fogColor = new THREE.Color(0xc6cdd5);
-scene.fog = new THREE.Fog(fogColor, 30, 260);
+scene.fog = new THREE.Fog(fogColor, 60, 420);
 
 // --- Dual-Camera Setup ---
 // Camera 2: World Camera (renders terrain, mountains, trees, skybox, snow spray, and scenery)
@@ -95,7 +95,7 @@ sunLight.shadow.camera.layers.enable(1);
 sunLight.shadow.mapSize.width = 512;
 sunLight.shadow.mapSize.height = 512;
 sunLight.shadow.camera.near = 15;
-sunLight.shadow.camera.far = 360;
+sunLight.shadow.camera.far = 450;
 
 // Optimized shadow frustum: forward-biased along skier view direction
 const shadowCoverage = 48;
@@ -144,9 +144,9 @@ const skyboxPromise = new Promise((resolve) => {
 
 // --- Modular Procedural Terrain System with Mountains and Rock Texturing ---
 const terrainManager = new TerrainManager(scene, {
-  chunkSize: 64,         // World units per chunk
-  chunkSegments: 28,     // High-efficiency near vertex budget: smooth curves with low CPU overhead
-  renderDistance: 4,     // 256m view distance perfectly matching fog distance (260m)
+  chunkSize: 96,         // World units per chunk (expanded for vast alpine scale)
+  chunkSegments: 32,     // High-efficiency near vertex budget: smooth curves with low CPU overhead
+  renderDistance: 4,     // 384m view distance matching expanded vistas and fog
   maxBuildsPerFrame: 1,  // Strict 1-chunk build cap per frame with 4ms time budget
   seed: Math.random() * 10000, // Randomized terrain generation seed
   treeModel: '/models/trees_pack.fbx', // Populate world with coniferous trees pack
@@ -278,8 +278,8 @@ function animate() {
   renderer.render(scene, characterCamera);
   scene.background = savedBg;
 
-  // 4. Update FPS & Ski / Flight Telemetry
-  fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode);
+  // 4. Update FPS & Ski / Flight Telemetry (including real-time airborne height)
+  fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode, player.getAltitude());
 }
 
 animate();

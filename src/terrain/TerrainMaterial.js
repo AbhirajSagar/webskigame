@@ -13,8 +13,8 @@ export const DEFAULT_SNOW_CONFIG = {
   // Slope & Wind Scour
   slopeMin: 0.42,
   slopeMax: 0.76,
-  peakScourStart: 92,
-  peakScourEnd: 125,
+  peakScourStart: 155,
+  peakScourEnd: 210,
   peakScourIntensity: 0.36,
 
   // Surface & Roughness

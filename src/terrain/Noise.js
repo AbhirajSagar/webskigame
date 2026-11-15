@@ -163,43 +163,58 @@ export class TerrainHeightmap {
     this.simplexHills = new SimplexNoise(seed + 202);
     this.simplexWarp = new SimplexNoise(seed + 303);
     this.simplexCrags = new SimplexNoise(seed + 404);
+    this.simplexRollers = new SimplexNoise(seed + 505);
     this._lakeCellCache = new Map();
   }
 
   /**
    * Calculates pure geological terrain elevation prior to any lake carving.
+   * Features dynamic alpine terrain flow: rolling moraines, natural half-pipe gullies,
+   * banked ski bowls, sharp arêtes, and rhythmic piste rollers (no dead flat plains).
    * @param {number} x
    * @param {number} z
    * @returns {number}
    */
   getBaseHeight(x, z) {
-    const warpScale = 0.0011;
-    const warpStrength = 65.0;
-    const wx = x + warpStrength * this.simplexWarp.noise2D(x * warpScale, z * warpScale);
-    const wz = z + warpStrength * this.simplexWarp.noise2D((x + 52.3) * warpScale, (z + 87.1) * warpScale);
+    // 1. Dual-tier domain warping for organic winding valleys and curved ridges
+    const warp1 = this.simplexWarp.noise2D(x * 0.0006, z * 0.0006) * 75.0;
+    const warp2 = this.simplexWarp.noise2D((x + 65.3) * 0.0020, (z + 41.7) * 0.0020) * 18.0;
+    const wx = x + warp1 + warp2;
+    const wz = z + this.simplexWarp.noise2D((x + 120.0) * 0.0006, (z + 85.0) * 0.0006) * 75.0 + warp2;
 
-    const continentalNoise = this.simplexBase.fbm(wx * 0.00075, wz * 0.00075, 3, 2.0, 0.5);
-    const continentalMask = (continentalNoise + 1.0) * 0.5;
+    // 2. Continental Mountain Range Distribution
+    const continentalNoise = this.simplexBase.fbm(wx * 0.00055, wz * 0.00055, 3, 2.0, 0.5);
+    const continental = (continentalNoise + 1.0) * 0.5;
 
-    const valley = this.simplexBase.fbm(wx * 0.0018, wz * 0.0018, 3, 2.0, 0.45) * 8.0;
-    const valleyNoise = this.simplexBase.noise2D(wx * 0.0012 + 10.0, wz * 0.0012 + 20.0);
-    const valleyDepression = (valleyNoise * valleyNoise) * -4.0;
+    // 3. Valley Floor: Glacial Moraines & Natural Carving Gullies (Zero Dead Flats)
+    const valleyRollers = this.simplexBase.fbm(wx * 0.0022, wz * 0.0022, 3, 2.0, 0.48) * 14.0;
+    const gullyNoise = this.simplexBase.noise2D(wx * 0.0014 + 12.0, wz * 0.0014 + 35.0);
+    const gully = -Math.abs(gullyNoise) * 12.0;
+    const valleyBase = valleyRollers + gully;
 
-    const hillWeight = smoothstep(0.24, 0.55, continentalMask);
-    const hills = this.simplexHills.fbm(wx * 0.0028, wz * 0.0028, 4, 2.0, 0.48) * 36.0;
+    // 4. Foothills, Rolling Ski Bowls & Spines
+    const hillWeight = smoothstep(0.12, 0.54, continental);
+    const hillsFbm = this.simplexHills.fbm(wx * 0.0016, wz * 0.0016, 4, 2.0, 0.48) * 55.0;
+    const hillBillow = Math.abs(this.simplexHills.noise2D(wx * 0.0028 + 7.0, wz * 0.0028 + 19.0)) * 20.0;
+    const hills = (hillsFbm + hillBillow) * hillWeight;
 
-    const mountainWeight = smoothstep(0.38, 0.82, continentalMask);
-    const ridge1 = this.simplexMountains.ridged(wx * 0.0020, wz * 0.0020, 5, 2.1, 0.55);
-    const ridge2 = this.simplexMountains.ridged(wx * 0.0045, wz * 0.0045, 4, 2.0, 0.50);
-    const rawBillow = this.simplexMountains.noise2D(wx * 0.0015 + 45.0, wz * 0.0015 + 72.0);
+    // 5. Alpine Peaks, Razor Arêtes & Glacial Cirques
+    const mountainWeight = smoothstep(0.35, 0.76, continental);
+    const ridge1 = this.simplexMountains.ridged(wx * 0.0010, wz * 0.0010, 5, 2.1, 0.55);
+    const ridge2 = this.simplexMountains.ridged(wx * 0.0024, wz * 0.0024, 4, 2.0, 0.50);
+    const rawBillow = this.simplexMountains.noise2D(wx * 0.0008 + 45.0, wz * 0.0008 + 72.0);
     const billow = Math.sqrt(rawBillow * rawBillow + 0.02);
-    const shapedRidge = Math.pow(ridge1, 1.40) * 1.20;
-    const mountainMass = (shapedRidge * 120.0 + ridge2 * 32.0 + billow * 40.0);
+    const shapedRidge = Math.pow(ridge1, 1.35) * 1.25;
+    const mountainMass = (shapedRidge * 195.0 + ridge2 * 48.0 + billow * 55.0) * mountainWeight;
 
-    const cragNoise = this.simplexCrags.noise2D(wx * 0.006, wz * 0.006);
-    const rockyCrags = cragNoise * 3.5;
+    // 6. Crags & Steep Chutes
+    const cragWeight = smoothstep(0.42, 0.85, continental);
+    const crag = this.simplexCrags.noise2D(wx * 0.0035, wz * 0.0035) * 6.5 * cragWeight;
 
-    return valley + valleyDepression + hills * hillWeight + (mountainMass + rockyCrags) * mountainWeight;
+    // 7. Ski Piste Rollers & Berms (Tactile Flow)
+    const rollers = this.simplexRollers.fbm(wx * 0.008, wz * 0.008, 2, 2.0, 0.45) * 2.8;
+
+    return valleyBase + hills + mountainMass + crag + rollers;
   }
 
   /**
@@ -207,11 +222,11 @@ export class TerrainHeightmap {
    * @private
    */
   _getContinentalMask(x, z) {
-    const warpScale = 0.0011;
-    const warpStrength = 65.0;
-    const wx = x + warpStrength * this.simplexWarp.noise2D(x * warpScale, z * warpScale);
-    const wz = z + warpStrength * this.simplexWarp.noise2D((x + 52.3) * warpScale, (z + 87.1) * warpScale);
-    const continentalNoise = this.simplexBase.fbm(wx * 0.00075, wz * 0.00075, 3, 2.0, 0.5);
+    const warp1 = this.simplexWarp.noise2D(x * 0.0006, z * 0.0006) * 75.0;
+    const warp2 = this.simplexWarp.noise2D((x + 65.3) * 0.0020, (z + 41.7) * 0.0020) * 18.0;
+    const wx = x + warp1 + warp2;
+    const wz = z + this.simplexWarp.noise2D((x + 120.0) * 0.0006, (z + 85.0) * 0.0006) * 75.0 + warp2;
+    const continentalNoise = this.simplexBase.fbm(wx * 0.00055, wz * 0.00055, 3, 2.0, 0.5);
     return (continentalNoise + 1.0) * 0.5;
   }
 
@@ -224,12 +239,12 @@ export class TerrainHeightmap {
     const key = `${cellX},${cellZ}`;
     if (this._lakeCellCache.has(key)) return this._lakeCellCache.get(key);
 
-    const cellSize = 380.0;
+    const cellSize = 650.0;
     const h1x = Math.sin(cellX * 127.1 + cellZ * 311.7) * 43758.5453;
     const h1_x = h1x - Math.floor(h1x);
 
-    // Lake candidate cell probability gate
-    if (h1_x > 0.65) {
+    // Rare alpine tarns (only ~18% probability gate per 650m cell)
+    if (h1_x > 0.18) {
       const empty = { isLake: false };
       this._lakeCellCache.set(key, empty);
       return empty;
@@ -242,8 +257,8 @@ export class TerrainHeightmap {
     const h2_x = h2x - Math.floor(h2x);
     const h2_y = h2y - Math.floor(h2y);
 
-    const radius = 55.0 + 30.0 * h2_y;
-    const shoreWidth = 22.0;
+    const radius = 45.0 + 25.0 * h2_y;
+    const shoreWidth = 18.0;
 
     // Search 5 candidate locations across the cell for the flattest valley basin
     const candidates = [
@@ -260,7 +275,7 @@ export class TerrainHeightmap {
     for (const [candX, candZ] of candidates) {
       // 1. Continental mask check: strictly avoid mountain ranges and high foothills
       const mask = this._getContinentalMask(candX, candZ);
-      if (mask > 0.36) continue;
+      if (mask > 0.28) continue;
 
       // 2. Strict slope & elevation difference check across candidate lake footprint
       const testR = radius * 0.7;
@@ -272,8 +287,8 @@ export class TerrainHeightmap {
       const maxDiff = Math.max(Math.abs(hE - h0), Math.abs(hW - h0), Math.abs(hN - h0), Math.abs(hS - h0));
       const slope = maxDiff / testR;
 
-      // Max allowed slope is ~4.5 degrees (0.08) - guaranteeing an authentic flat valley
-      if (slope < 0.08 && slope < minSlope) {
+      // Max allowed slope is ~5.7 degrees (0.10) - guaranteeing an authentic flat valley
+      if (slope < 0.10 && slope < minSlope) {
         minSlope = slope;
         best = {
           isLake: true,
@@ -302,7 +317,7 @@ export class TerrainHeightmap {
     const wz = z;
 
     // Subtle surface micro-undulation for snow surface relief
-    const micro = this.simplexBase.noise2D(wx * 0.012, wz * 0.012) * 0.4;
+    const micro = this.simplexBase.noise2D(wx * 0.010, wz * 0.010) * 0.35;
 
     // Frozen Alpine Lake Basins
     const lake = this.getLakeData(x, z);
@@ -324,7 +339,7 @@ export class TerrainHeightmap {
    * @returns {{ factor: number, depth: number, elevation: number, isFrozenLake: boolean }}
    */
   getLakeData(x, z) {
-    const cellSize = 380.0;
+    const cellSize = 650.0;
     const cx = Math.floor(x / cellSize);
     const cz = Math.floor(z / cellSize);
 
@@ -338,7 +353,7 @@ export class TerrainHeightmap {
         const lake = this._getCellLake(cx + dx, cz + dz);
         if (!lake.isLake) continue;
 
-        const warp = Math.sin(x * 0.045 + z * 0.035) * 6.0 + Math.cos(x * 0.02 - z * 0.05) * 7.0;
+        const warp = Math.sin(x * 0.035 + z * 0.025) * 6.0 + Math.cos(x * 0.018 - z * 0.03) * 7.0;
         const dist = Math.hypot(x - lake.x, z - lake.z) + warp;
 
         if (dist < lake.radius + lake.shoreWidth) {
@@ -368,7 +383,7 @@ export class TerrainHeightmap {
    * @returns {boolean}
    */
   isNearLake(x, z, clearance = 10.0) {
-    const cellSize = 380.0;
+    const cellSize = 650.0;
     const cx = Math.floor(x / cellSize);
     const cz = Math.floor(z / cellSize);
 
@@ -377,7 +392,7 @@ export class TerrainHeightmap {
         const lake = this._getCellLake(cx + dx, cz + dz);
         if (!lake.isLake) continue;
 
-        const warp = Math.sin(x * 0.045 + z * 0.035) * 6.0 + Math.cos(x * 0.02 - z * 0.05) * 7.0;
+        const warp = Math.sin(x * 0.035 + z * 0.025) * 6.0 + Math.cos(x * 0.018 - z * 0.03) * 7.0;
         const dist = Math.hypot(x - lake.x, z - lake.z) + warp;
 
         if (dist < lake.radius + lake.shoreWidth + clearance) {
@@ -396,7 +411,7 @@ export class TerrainHeightmap {
    * @returns {{ x: number, z: number, elevation: number, radius: number } | null}
    */
   getNearestLake(x, z) {
-    const cellSize = 380.0;
+    const cellSize = 650.0;
     const cx = Math.floor(x / cellSize);
     const cz = Math.floor(z / cellSize);
 
@@ -420,10 +435,10 @@ export class TerrainHeightmap {
 
   /**
    * Continuous analytical finite-difference normal.
-   * Uses epsilon=0.75m to band-limit derivatives to the mesh grid spacing,
+   * Uses epsilon=0.85m to band-limit derivatives to the mesh grid spacing,
    * eliminating sub-grid derivative oscillation and polygon sawtooth aliasing.
    */
-  getNormal(x, z, epsilon = 0.75) {
+  getNormal(x, z, epsilon = 0.85) {
     const lake = this.getLakeData(x, z);
     if (lake.factor > 0.65) {
       // Ice sheet is completely horizontal (zero slope)
