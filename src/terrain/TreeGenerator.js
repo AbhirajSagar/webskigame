@@ -522,9 +522,9 @@ export class TreeGenerator {
 
     let measuredRadius = (trunkSampleCount > 0 && maxTrunkDistSq > 0)
       ? Math.sqrt(maxTrunkDistSq)
-      : 0.22;
-    // Clamp to realistic tree trunk bounds (0.15m to 0.45m in unscaled base model units)
-    const trunkRadius = Math.max(0.15, Math.min(0.45, measuredRadius));
+      : 0.12;
+    // Clamp to realistic tree trunk bounds (0.08m to 0.16m in unscaled base model units, so 3x scaled trunks have realistic 0.25m-0.45m radius)
+    const trunkRadius = Math.max(0.08, Math.min(0.16, measuredRadius));
 
     const sharedMats = TreeGenerator.getSharedMaterials();
 

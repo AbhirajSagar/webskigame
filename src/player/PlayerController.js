@@ -106,8 +106,8 @@ export class PlayerController {
     this.trauma = 0.0;
     this.shakeTime = 0.0;
 
-    // Tree trunk collision parameters
-    this.treeCollisionRadius = 0.35;
+    // Tree trunk collision parameters (compact capsule for snowboarder)
+    this.treeCollisionRadius = 0.22;
     this._nearbyTrunks = [];
 
     // Input state: strictly forward acceleration (W / ArrowUp)
@@ -482,6 +482,16 @@ export class PlayerController {
     _scratchCamDesired.addScaledVector(_scratchForwardXZ, forwardOffset);
     _scratchCamDesired.y += verticalOffset;
 
+    // Camera shake impact trauma on tree collisions and hard landings
+    if (this.trauma > 0.001) {
+      this.trauma = Math.max(0, this.trauma - dt * 3.5);
+      this.shakeTime += dt;
+      const shake = this.trauma * this.trauma;
+      const t = this.shakeTime * 38.0;
+      _scratchCamDesired.x += (Math.sin(t * 1.7) + Math.cos(t * 3.1) * 0.5) * 0.06 * shake;
+      _scratchCamDesired.y += (Math.cos(t * 1.5) + Math.sin(t * 2.9) * 0.5) * 0.06 * shake;
+    }
+
     // 2. Head tracking stabilization:
     // Track the head bone position relative to the player ground position.
     // By smoothing the local head offset, the camera stays locked to the character's head
@@ -601,6 +611,11 @@ export class PlayerController {
         this.steerBank = carveRatio * 0.35;
       } else {
         this.steerBank = 0.0;
+        // If stopped or nearly stopped and pressing forward, immediately launch along gaze heading
+        if (this.keys.forward) {
+          this.velocity.x = _scratchForwardXZ.x * 3.5;
+          this.velocity.z = _scratchForwardXZ.z * 3.5;
+        }
       }
 
       // 4. Ground Contact & Slope Following
@@ -681,17 +696,19 @@ export class PlayerController {
     const nearbyTrunks = this.terrainManager.getNearbyTrunkColliders(
       this.position.x,
       this.position.z,
-      4.0,
+      5.0,
       this._nearbyTrunks
     );
 
     if (!nearbyTrunks || nearbyTrunks.length === 0) return;
 
-    const playerRadius = this.treeCollisionRadius || 0.35;
+    const playerRadius = this.treeCollisionRadius || 0.22;
     const playerFeetY = this.position.y;
     const playerHeadY = this.position.y + 1.8;
 
-    for (let pass = 0; pass < 2; pass++) {
+    let momentumDampened = false;
+
+    for (let pass = 0; pass < 3; pass++) {
       let hadCollision = false;
 
       for (let i = 0; i < nearbyTrunks.length; i++) {
@@ -703,23 +720,38 @@ export class PlayerController {
           continue;
         }
 
-        const segX = this.position.x - prevX;
-        const segZ = this.position.z - prevZ;
-        const segLenSq = segX * segX + segZ * segZ;
-        let tParam = 0;
-        if (segLenSq > 1e-6) {
-          tParam = ((t.x - prevX) * segX + (t.z - prevZ) * segZ) / segLenSq;
-          tParam = Math.max(0, Math.min(1, tParam));
-        }
-        const closeX = prevX + tParam * segX;
-        const closeZ = prevZ + tParam * segZ;
-
-        const dx = closeX - t.x;
-        const dz = closeZ - t.z;
-        const distSq = dx * dx + dz * dz;
         const minDistance = t.radius + playerRadius;
+        const minDistanceSq = minDistance * minDistance;
 
-        if (distSq < minDistance * minDistance) {
+        // Current distance vector from tree center to player
+        let dx = this.position.x - t.x;
+        let dz = this.position.z - t.z;
+        let distSq = dx * dx + dz * dz;
+
+        // Continuous swept segment test between prev and current positions
+        let isSwept = false;
+        if (distSq >= minDistanceSq) {
+          const segX = this.position.x - prevX;
+          const segZ = this.position.z - prevZ;
+          const segLenSq = segX * segX + segZ * segZ;
+          if (segLenSq > 1e-6) {
+            let tParam = ((t.x - prevX) * segX + (t.z - prevZ) * segZ) / segLenSq;
+            if (tParam > 0 && tParam < 1) {
+              const closeX = prevX + tParam * segX;
+              const closeZ = prevZ + tParam * segZ;
+              const cdx = closeX - t.x;
+              const cdz = closeZ - t.z;
+              if (cdx * cdx + cdz * cdz < minDistanceSq) {
+                isSwept = true;
+                dx = cdx;
+                dz = cdz;
+                distSq = cdx * cdx + cdz * cdz;
+              }
+            }
+          }
+        }
+
+        if (distSq < minDistanceSq || isSwept) {
           hadCollision = true;
           let dist = Math.sqrt(distSq);
           let nx = 0;
@@ -729,29 +761,56 @@ export class PlayerController {
             nx = dx / dist;
             nz = dz / dist;
           } else {
+            // Player is right on tree center: push out opposite to velocity or gaze
             const spd = Math.hypot(this.velocity.x, this.velocity.z);
             if (spd > 0.01) {
               nx = -this.velocity.x / spd;
               nz = -this.velocity.z / spd;
             } else {
-              nx = 1;
-              nz = 0;
+              nx = _scratchForwardXZ.x || 1;
+              nz = _scratchForwardXZ.z || 0;
             }
           }
 
-          this.position.x = t.x + nx * minDistance;
-          this.position.z = t.z + nz * minDistance;
+          // Clean separation: push position outside with safety clearance margin (4cm) to prevent re-collision
+          const separationMargin = 0.04;
+          this.position.x = t.x + nx * (minDistance + separationMargin);
+          this.position.z = t.z + nz * (minDistance + separationMargin);
 
+          // Velocity Deflection & Momentum Reduction:
+          // Hitting a tree removes 70% of momentum (retaining 30% speed)
           const vn = this.velocity.x * nx + this.velocity.z * nz;
-          if (vn < 0) {
-            const vtX = this.velocity.x - vn * nx;
-            const vtZ = this.velocity.z - vn * nz;
+          const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
 
-            const bounce = 0.25;
-            const friction = 0.65;
+          // Determine which tangent aligns best with the player's movement direction
+          // Tangent 1: (-nz, nx); Tangent 2: (nz, -nx)
+          let tx = -nz;
+          let tz = nx;
+          if (this.velocity.x * tx + this.velocity.z * tz < 0) {
+            tx = nz;
+            tz = -nx;
+          }
 
-            this.velocity.x = vtX * friction - nx * vn * bounce;
-            this.velocity.z = vtZ * friction - nz * vn * bounce;
+          if (vn < 0 && !momentumDampened) {
+            momentumDampened = true;
+
+            // Remove 70% of momentum -> retain 30% of current speed
+            const remainingSpeed = currentSpeed * 0.30;
+
+            // Direct remaining 30% momentum along the tangent around the trunk plus a slight outward pop (0.8 m/s)
+            this.velocity.x = tx * remainingSpeed + nx * 0.8;
+            this.velocity.z = tz * remainingSpeed + nz * 0.8;
+
+            // Impact camera shake feedback proportional to hit severity
+            if (Math.abs(vn) > 3.0) {
+              this.trauma = Math.min(0.45, this.trauma + Math.min(0.35, Math.abs(vn) * 0.025));
+            }
+          } else if (vn >= 0) {
+            // Already moving outward: ensure clean clearance
+            if (vn < 0.5) {
+              this.velocity.x += nx * 0.5;
+              this.velocity.z += nz * 0.5;
+            }
           }
         }
       }

@@ -204,8 +204,8 @@ export class CharacterModel {
       loadBoostPromise,
     ]);
 
-    // 1. Setup Character Rig & Materials
-    if (charFbx) {
+    if (charFbx) 
+    {
       this.character = charFbx;
       this.character.name = 'SkaterCharacter';
 
@@ -218,7 +218,12 @@ export class CharacterModel {
       const unitScale = maxMeshScale >= 50.0 ? 0.01 : 1.0;
       const finalScale = unitScale * this.scaleMultiplier;
       this.character.scale.set(finalScale, finalScale, finalScale);
-      this.character.position.set(0, -0.12, 0);
+      // Anchor boots flush onto snowboard deck and center stance symmetrically between bindings
+      this.character.position.set(
+        -0.02 * this.scaleMultiplier,
+        -0.245 * this.scaleMultiplier,
+        -0.23 * this.scaleMultiplier
+      );
 
       this.character.traverse((child) => {
         if (child.isMesh) {
@@ -231,6 +236,7 @@ export class CharacterModel {
               if (!m) return;
               m.side = THREE.FrontSide;
 
+              // Safely clean up missing author textures that were routed to dummy 1x1 data
               ['map', 'normalMap', 'specularMap', 'bumpMap', 'emissiveMap'].forEach((slot) => {
                 if (m[slot]) {
                   if (!m[slot].image || (m[slot].image.width && m[slot].image.width <= 1)) {
@@ -242,29 +248,7 @@ export class CharacterModel {
                 }
               });
 
-              if (m.name === 'jacket') {
-                m.color.set(0x2563eb); // Electric alpine blue ski jacket
-                m.shininess = 20;
-              }
-              if (m.name === 'pants') {
-                m.color.set(0x1e242b); // Dark slate snowboard pants
-                m.shininess = 15;
-              }
-              if (m.name === 'fabric_woolen_black') {
-                m.color.set(0x18181c); // Knit black beanie / facemask
-                m.shininess = 5;
-              }
-              if (m.name === 'glass_pink') {
-                m.color.set(0xff3388); // Iridescent pink alpine goggles
-                m.shininess = 140;
-                m.transparent = true;
-                m.opacity = 0.85;
-              }
-              if (m.name === 'coated_white') {
-                m.color.set(0xf8fafc); // Crisp white helmet shell & boots
-                m.shininess = 60;
-              }
-
+              // Materials are preserved 100% as authored in the FBX file without overriding colors
               m.needsUpdate = true;
             });
           }
@@ -298,12 +282,13 @@ export class CharacterModel {
       }
 
       // Initialize all actions with LoopRepeat and start in Cruise state
-      for (const [key, act] of Object.entries(this.actions)) {
-        if (act) {
-          act.setLoop(THREE.LoopRepeat);
-          act.play();
-          act.setEffectiveWeight(key === 'cruise' ? 1.0 : 0.0);
-        }
+      for (const [key, act] of Object.entries(this.actions)) 
+      {
+        if (!act) continue;
+
+        act.setLoop(THREE.LoopRepeat);
+        act.play();
+        act.setEffectiveWeight(key === 'cruise' ? 1.0 : 0.0);
       }
 
       this.currentAction = this.actions.cruise;
@@ -314,9 +299,8 @@ export class CharacterModel {
       this.headBone = this.character.getObjectByName('mixamorigHead') || null;
       this.neckBone = this.character.getObjectByName('mixamorigNeck') || null;
       this.headTopBone = this.character.getObjectByName('mixamorigHeadTop_End') || null;
-      if (this.headBone && this.isFirstPerson) {
-        this.headBone.scale.set(0.0001, 0.0001, 0.0001);
-      }
+      
+      if (this.headBone) this.headBone.scale.set(1.0, 1.0, 1.0);
 
       this.group.add(this.character);
       this._setupCharacterLayers(this.character);
@@ -365,15 +349,7 @@ export class CharacterModel {
                 }
               });
 
-              if (m.name === 'Material.001') {
-                m.color.set(0x1a1a24);
-                m.shininess = 65;
-              }
-              if (m.name === 'white') {
-                m.color.set(0x0f172a); // Midnight alpine snowboard deck
-                m.shininess = 90;
-              }
-
+              // Preserve original snowboard materials from board.fbx
               m.needsUpdate = true;
             });
           }
@@ -436,7 +412,11 @@ export class CharacterModel {
     if (this.character) {
       const s = 0.01 * this.scaleMultiplier;
       this.character.scale.set(s, s, s);
-      this.character.position.set(0, -0.12 * this.scaleMultiplier, 0);
+      this.character.position.set(
+        -0.02 * this.scaleMultiplier,
+        -0.245 * this.scaleMultiplier,
+        -0.23 * this.scaleMultiplier
+      );
     }
     if (this.board) {
       const s = 0.01 * this.scaleMultiplier;
@@ -475,11 +455,7 @@ export class CharacterModel {
   setFirstPersonMode(isFps) {
     this.isFirstPerson = !!isFps;
     if (this.headBone) {
-      if (this.isFirstPerson) {
-        this.headBone.scale.set(0.0001, 0.0001, 0.0001);
-      } else {
-        this.headBone.scale.set(1.0, 1.0, 1.0);
-      }
+      this.headBone.scale.set(1.0, 1.0, 1.0);
       this.group.updateMatrixWorld(true);
     }
   }
@@ -629,13 +605,9 @@ export class CharacterModel {
     // 9. Snow Spray Particle Update
     this._updateSpray(dt, player);
 
-    // 10. First-Person Mode Bone Scale & Matrix Sync
-    if (this.headBone) {
-      if (this.isFirstPerson) {
-        this.headBone.scale.set(0.0001, 0.0001, 0.0001);
-      } else if (this.headBone.scale.x < 0.5) {
-        this.headBone.scale.set(1.0, 1.0, 1.0);
-      }
+    // 10. Preserve natural head & helmet bone scale
+    if (this.headBone && this.headBone.scale.x < 0.5) {
+      this.headBone.scale.set(1.0, 1.0, 1.0);
     }
     this.group.updateMatrixWorld(true);
   }
