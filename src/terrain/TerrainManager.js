@@ -18,11 +18,12 @@ export class TerrainManager {
     this.scene = scene;
 
     this.chunkSize = options.chunkSize || 64;
-    this.chunkSegments = options.chunkSegments || 64;
-    this.renderDistance = options.renderDistance || 4; // Chunk radius
-    this.maxBuildsPerFrame = options.maxBuildsPerFrame || 2;
+    this.chunkSegments = options.chunkSegments || 28;
+    this.renderDistance = options.renderDistance || 4; // 256m view radius
+    this.maxBuildsPerFrame = options.maxBuildsPerFrame || 1;
 
-    this.heightmap = new TerrainHeightmap(options.seed || 1337);
+    this.seed = options.seed !== undefined ? options.seed : 1337;
+    this.heightmap = new TerrainHeightmap(this.seed);
     this.materialFactory = new TerrainMaterialFactory();
 
     // Active model identifier ('/models/...', 'all', etc.)
@@ -33,7 +34,7 @@ export class TerrainManager {
 
     // Procedural tree generator with model preloading & caching
     this.treeGenerator = new TreeGenerator({
-      seed: options.seed || 1337,
+      seed: this.seed,
       heightmap: this.heightmap,
       treeModel: initialTreeModel,
       chunkSize: this.chunkSize,
@@ -241,6 +242,10 @@ export class TerrainManager {
       if (dx * dx + dz * dz > unloadDistSq) {
         chunk.dispose(this.scene);
         this.loadedChunks.delete(key);
+      } else {
+        // Dynamically update near/distant material & LOD geometry as player moves
+        const isNear = (dx * dx + dz * dz) <= 2;
+        chunk.setNearState(isNear, this.chunkSegments);
       }
     }
 
@@ -255,8 +260,9 @@ export class TerrainManager {
           const key = this._chunkKey(cx, cz);
 
           if (!this.loadedChunks.has(key) && !this.queuedKeys.has(key)) {
+            const isNear = distSq <= 2;
             // If initial load and within immediate 3x3 radius, build immediately
-            if (isInitial && Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
+            if (isInitial && isNear) {
               const chunk = new TerrainChunk(
                 cx,
                 cz,
@@ -264,14 +270,15 @@ export class TerrainManager {
                 this.chunkSegments,
                 this.heightmap,
                 this.materialFactory,
-                this.treeGenerator
+                this.treeGenerator,
+                true
               );
               this.scene.add(chunk.mesh);
               const playerX = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
               const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
               const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
               if (this.treeGenerator.isLoaded) {
-                chunk.buildTrees(this.scene, dist <= 95, dist, this.cameraFrustum);
+                chunk.buildTrees(this.scene, dist <= 75, dist, this.cameraFrustum);
               } else {
                 chunk.updateTreeLOD(dist, this.cameraFrustum);
               }
@@ -303,8 +310,14 @@ export class TerrainManager {
 
   _processBuildQueue() {
     let buildsThisFrame = 0;
+    const startTime = performance.now();
 
     while (this.buildQueue.length > 0 && buildsThisFrame < this.maxBuildsPerFrame) {
+      // Hard time budget: never spend more than 4ms on chunk creation to guarantee 60 FPS pacing
+      if (buildsThisFrame > 0 && (performance.now() - startTime) > 4.0) {
+        break;
+      }
+
       const item = this.buildQueue.shift();
       const key = this._chunkKey(item.cx, item.cz);
       this.queuedKeys.delete(key);
@@ -312,16 +325,23 @@ export class TerrainManager {
       // Verify still within active range before constructing geometry
       const dx = item.cx - (this.lastPlayerChunkX ?? 0);
       const dz = item.cz - (this.lastPlayerChunkZ ?? 0);
-      if (dx * dx + dz * dz <= (this.renderDistance + 1) * (this.renderDistance + 1)) {
+      const distSq = dx * dx + dz * dz;
+
+      if (distSq <= (this.renderDistance + 1) * (this.renderDistance + 1)) {
         if (!this.loadedChunks.has(key)) {
+          const isNear = distSq <= 2;
+          // Distant chunks use lightweight 10-segment geometry; near chunks use detailed 28-segment geometry
+          const segments = isNear ? this.chunkSegments : 10;
+
           const chunk = new TerrainChunk(
             item.cx,
             item.cz,
             this.chunkSize,
-            this.chunkSegments,
+            segments,
             this.heightmap,
             this.materialFactory,
-            this.treeGenerator
+            this.treeGenerator,
+            isNear
           );
 
           this.scene.add(chunk.mesh);
@@ -329,7 +349,7 @@ export class TerrainManager {
           const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
           const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
           if (this.treeGenerator.isLoaded) {
-            chunk.buildTrees(this.scene, dist <= 95, dist, this.cameraFrustum);
+            chunk.buildTrees(this.scene, dist <= 75, dist, this.cameraFrustum);
           } else {
             chunk.updateTreeLOD(dist, this.cameraFrustum);
           }
@@ -396,11 +416,11 @@ export class TerrainManager {
    * Reuses an internal array by default to guarantee ZERO garbage collection per frame.
    * @param {number} px - World X coordinate
    * @param {number} pz - World Z coordinate
-   * @param {number} [searchRadius=5.0] - Search radius in meters
+   * @param {number} [searchRadius=12.0] - Search radius in meters
    * @param {Array} [outResults] - Optional destination array
-   * @returns {Array<Object>} Array of tree trunk colliders { x, y, z, radius, height }
+   * @returns {Array<Object>} Array of tree trunk colliders { x, y, z, radius, height, branchRadius }
    */
-  getNearbyTrunkColliders(px, pz, searchRadius = 5.0, outResults = null) {
+  getNearbyTrunkColliders(px, pz, searchRadius = 12.0, outResults = null) {
     if (!outResults) {
       if (!this._cachedNearbyTrunks) this._cachedNearbyTrunks = [];
       outResults = this._cachedNearbyTrunks;

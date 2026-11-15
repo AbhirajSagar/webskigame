@@ -7,6 +7,30 @@ import { TreeTextureFactory } from './TreeTextures.js';
 import { TreeImpostorBaker } from './TreeImpostorBaker.js';
 
 /**
+ * Deterministically maps a world position (x, z) and terrain seed to a tree foliage type.
+ * Eliminates the need to store foliage types in memory on tree colliders while ensuring
+ * that the visual model placed at (x, z) and leaf particles spawned at (x, z) always match.
+ *
+ * @param {number} x - World X position
+ * @param {number} z - World Z position
+ * @param {number} [seed=1337] - World generation seed
+ * @returns {'green'|'orange'|'snow'}
+ */
+export function getTreeFoliageType(x, z, seed = 1337) {
+  const ix = Math.round(x * 100) | 0;
+  const iz = Math.round(z * 100) | 0;
+  const iseed = Math.round(seed * 100) | 0;
+
+  let h = Math.imul(ix, 73856093) ^ Math.imul(iz, 19349663) ^ Math.imul(iseed, 83492791);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  const val = ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+
+  if (val < 0.45) return 'green';
+  if (val < 0.75) return 'orange';
+  return 'snow';
+}
+
+/**
  * Categorizes a model or variant filename for biome placement.
  */
 export function getModelCategory(name) {
@@ -128,6 +152,11 @@ export class TreeGenerator {
     // Extracted and categorized models
     this.activeTrees = [];
     this.activeSnags = [];
+    this.activeTreesByFoliage = {
+      green: [],
+      orange: [],
+      snow: [],
+    };
     this.loadedModels = [];
     this.isLoaded = false;
     this.loadPromise = null;
@@ -269,12 +298,22 @@ export class TreeGenerator {
       this.loadedModels = loadedList;
       this.activeTrees = [];
       this.activeSnags = [];
+      this.activeTreesByFoliage = {
+        green: [],
+        orange: [],
+        snow: [],
+      };
 
       for (const m of loadedList) {
         if (m.isDead) {
           this.activeSnags.push(m);
         } else {
           this.activeTrees.push(m);
+          const fType = m.foliageType || 'green';
+          if (!this.activeTreesByFoliage[fType]) {
+            this.activeTreesByFoliage[fType] = [];
+          }
+          this.activeTreesByFoliage[fType].push(m);
         }
       }
 
@@ -526,6 +565,23 @@ export class TreeGenerator {
     // Clamp to realistic tree trunk bounds (0.08m to 0.16m in unscaled base model units, so 3x scaled trunks have realistic 0.25m-0.45m radius)
     const trunkRadius = Math.max(0.08, Math.min(0.16, measuredRadius));
 
+    // Calculate actual 3D branch / canopy horizontal extent from geometry vertices
+    let maxBranchDistSq = 0;
+    for (let idx = 0; idx < meshes.length; idx++) {
+      const g = geoms[idx];
+      if (!g || !g.attributes.position) continue;
+      const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+        const distSq = x * x + z * z;
+        if (distSq > maxBranchDistSq) {
+          maxBranchDistSq = distSq;
+        }
+      }
+    }
+    const branchRadius = maxBranchDistSq > 0 ? Math.sqrt(maxBranchDistSq) : 4.5;
+
     const sharedMats = TreeGenerator.getSharedMaterials();
 
     // If dead snag or no branch sub-meshes present, return single snag model
@@ -538,6 +594,7 @@ export class TreeGenerator {
         isDead: true,
         modelHeight: Math.max(0.5, actualHeight),
         trunkRadius,
+        branchRadius,
         geometry: finalGeom,
         materials: mats.length === 1 ? mats[0] : mats,
       }];
@@ -562,6 +619,7 @@ export class TreeGenerator {
         isDead: false,
         modelHeight: Math.max(0.5, actualHeight),
         trunkRadius,
+        branchRadius,
         geometry: finalGeom,
         materials: mats.length === 1 ? mats[0] : mats,
       };
@@ -655,9 +713,14 @@ export class TreeGenerator {
           const snagIdx = Math.floor(snagHash * 13) % this.activeSnags.length;
           modelData = this.activeSnags[snagIdx];
         } else if (this.activeTrees.length > 0) {
+          // Deterministically select foliage type (green, orange, snow) based on seed and world position
+          const foliageType = getTreeFoliageType(wx, wz, this.seed);
+          const pool = (this.activeTreesByFoliage[foliageType] && this.activeTreesByFoliage[foliageType].length > 0)
+            ? this.activeTreesByFoliage[foliageType]
+            : this.activeTrees;
           const treeHash = this._hash(chunkX, chunkZ, gx * 43, gz * 47);
-          const treeIdx = Math.floor(treeHash * this.activeTrees.length) % this.activeTrees.length;
-          modelData = this.activeTrees[treeIdx];
+          const treeIdx = Math.floor(treeHash * pool.length) % pool.length;
+          modelData = pool[treeIdx];
         } else {
           continue;
         }
@@ -736,12 +799,16 @@ export class TreeGenerator {
         }
 
         // Record trunk-only collider for physics (branches and foliage are non-collidable)
+        // and physical branchRadius for foliage brush particle effects
+        // Note: Foliage type is deterministically computed from (x, z, seed) at runtime,
+        // eliminating the memory overhead of storing tree types per collider.
         treeColliders.push({
           x: inst.x,
           y: inst.y,
           z: inst.z,
           radius: (modelData.trunkRadius || 0.22) * scale,
           height: (modelData.modelHeight || 8.0) * scale,
+          branchRadius: (modelData.branchRadius || 4.5) * scale,
         });
       }
 
@@ -859,6 +926,7 @@ export class TreeGenerator {
                 z: inst.z,
                 radius: baseRad * scale,
                 height: baseHeight * scale,
+                foliageType: modelData?.foliageType || 'green',
               });
             }
           }

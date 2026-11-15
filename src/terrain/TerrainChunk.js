@@ -15,7 +15,7 @@ export class TerrainChunk {
    * @param {TerrainMaterialFactory} materialFactory
    * @param {TreeGenerator|null} treeGenerator
    */
-  constructor(chunkX, chunkZ, size, segments, heightmap, materialFactory, treeGenerator = null) {
+  constructor(chunkX, chunkZ, size, segments, heightmap, materialFactory, treeGenerator = null, isNear = true) {
     this.chunkX = chunkX;
     this.chunkZ = chunkZ;
     this.size = size;
@@ -23,11 +23,12 @@ export class TerrainChunk {
     this.heightmap = heightmap;
     this.materialFactory = materialFactory;
     this.treeGenerator = treeGenerator;
+    this.isNear = isNear;
 
     this.mesh = null;
     this.treeMesh3D = null;
     this.treeMeshImpostor = null;
-    this.activeTreeLOD = null; // 0 = 3D (<= 65m), 1 = 4-poly cross-quad impostor (> 65m)
+    this.activeTreeLOD = null; // 0 = 3D (<= 48m), 1 = 4-poly cross-quad impostor (> 48m)
     this.treeColliders = null;
     this.isDisposed = false;
 
@@ -49,7 +50,11 @@ export class TerrainChunk {
     return this.activeTreeLOD === 0 ? this.treeMesh3D : this.treeMeshImpostor;
   }
 
-  _build() {
+  /**
+   * Builds the procedural plane geometry with heights, lake factors, and analytical border normals.
+   * @private
+   */
+  _buildGeometry() {
     const geometry = new THREE.PlaneGeometry(
       this.size,
       this.size,
@@ -135,6 +140,12 @@ export class TerrainChunk {
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
+    return { geometry, minY, maxY };
+  }
+
+  _build() {
+    const { geometry, minY, maxY } = this._buildGeometry();
+
     const half = this.size * 0.5;
     this.terrainBounds = new THREE.Box3(
       new THREE.Vector3(this.worldCenterX - half, minY - 1, this.worldCenterZ - half),
@@ -155,10 +166,33 @@ export class TerrainChunk {
       new THREE.Vector3(this.worldCenterX + half + 26, maxY + 28, this.worldCenterZ + half + 26)
     );
 
-    this.mesh = new THREE.Mesh(geometry, this.materialFactory.getMaterial());
+    // All chunks retain the rich original TerrainMaterial
+    const mat = this.materialFactory.getMaterial();
+
+    this.mesh = new THREE.Mesh(geometry, mat);
     this.mesh.position.set(this.worldCenterX, 0, this.worldCenterZ);
     this.mesh.castShadow = false; // Terrain only receives shadows, never casts onto itself
     this.mesh.receiveShadow = true;
+  }
+
+  /**
+   * Upgrades resolution seamlessly when chunk enters player proximity.
+   * All chunks retain the original TerrainMaterial.
+   * @param {boolean} isNear
+   * @param {number} [targetSegments=28]
+   */
+  setNearState(isNear, targetSegments = 28) {
+    if (this.isDisposed) return;
+    this.isNear = isNear;
+
+    // Upgrade resolution seamlessly if chunk became near and has low segment count
+    if (isNear && this.segments < targetSegments && this.mesh) {
+      const oldGeom = this.mesh.geometry;
+      this.segments = targetSegments;
+      const { geometry } = this._buildGeometry();
+      this.mesh.geometry = geometry;
+      if (oldGeom) oldGeom.dispose();
+    }
   }
 
   /**
@@ -246,7 +280,7 @@ export class TerrainChunk {
     // use lightweight impostors for the shadow pass to eliminate high-poly vertex overhead
     if (!inCameraView && inShadowView) {
       if (this.treeMesh3D && this.treeMesh3D.visible) this.treeMesh3D.visible = false;
-      const canCast = dist <= 95;
+      const canCast = dist <= 75;
       if (this.treeMeshImpostor) {
         if (this.treeMeshImpostor.visible !== canCast) this.treeMeshImpostor.visible = canCast;
         this._setCastShadowOnObj(this.treeMeshImpostor, canCast);
@@ -255,13 +289,13 @@ export class TerrainChunk {
       return;
     }
 
-    // Normal in-view LOD selection
+    // Normal in-view LOD selection (streamlined distances for high FPS)
     let targetLOD = this.activeTreeLOD;
     if (this.activeTreeLOD === null) {
-      targetLOD = dist <= 65 ? 0 : 1;
-    } else if (this.activeTreeLOD === 0 && dist > 80) {
+      targetLOD = dist <= 48 ? 0 : 1;
+    } else if (this.activeTreeLOD === 0 && dist > 60) {
       targetLOD = 1;
-    } else if (this.activeTreeLOD === 1 && dist <= 65) {
+    } else if (this.activeTreeLOD === 1 && dist <= 48) {
       targetLOD = 0;
     }
 
@@ -279,7 +313,7 @@ export class TerrainChunk {
       this.treeMeshImpostor.visible = wantImpVisible;
     }
 
-    const canCast = dist <= 95;
+    const canCast = dist <= 75;
     this._setCastShadowOnObj(this.treeMesh3D, want3DVisible && canCast);
     this._setCastShadowOnObj(this.treeMeshImpostor, wantImpVisible && canCast);
   }

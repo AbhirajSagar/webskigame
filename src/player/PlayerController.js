@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CharacterModel } from './CharacterModel.js';
+import { LeafParticleSystem } from './LeafParticleSystem.js';
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -132,6 +133,10 @@ export class PlayerController {
     this.character = new CharacterModel(this.scene, this.terrainManager);
     // Backward compatibility alias for any existing reference
     this.snowboard = this.character;
+
+    // High-speed tree leaf particles (deterministic multi-texture pine needles)
+    const seed = this.terrainManager?.seed ?? this.terrainManager?.treeGenerator?.seed ?? 1337;
+    this.leafParticles = new LeafParticleSystem(this.scene, seed);
 
     // Stabilized head tracking offset (relative to player ground position)
     this._smoothedHeadOffset = new THREE.Vector3(0, this.focusHeight + 0.25, 0);
@@ -450,6 +455,19 @@ export class PlayerController {
       }
     }
 
+    if (this.leafParticles) {
+      _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
+      _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+      this.leafParticles.update(
+        dt,
+        this.position,
+        this.velocity,
+        this.camera.position,
+        _scratchForwardXZ,
+        _scratchRightXZ
+      );
+    }
+
     this.speed = this.velocity.length();
 
     // Dynamic Speed FOV: expands smoothly with downhill velocity and altitude
@@ -723,7 +741,7 @@ export class PlayerController {
     const nearbyTrunks = this.terrainManager.getNearbyTrunkColliders(
       this.position.x,
       this.position.z,
-      5.0,
+      12.0,
       this._nearbyTrunks
     );
 
@@ -732,6 +750,68 @@ export class PlayerController {
     const playerRadius = this.treeCollisionRadius || 0.22;
     const playerFeetY = this.position.y;
     const playerHeadY = this.position.y + 1.8;
+    const playerMidY = this.position.y + 0.9;
+
+    // Tree branch & foliage touch -> spawn fluttering leaf particles whenever touching any part of the branches
+    if (this.leafParticles) {
+      const currentGroundSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+      if (currentGroundSpeed >= 1.5) {
+        _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
+        _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+
+        for (let i = 0; i < nearbyTrunks.length; i++) {
+          const t = nearbyTrunks[i];
+          const branchBottom = t.y - 0.6;
+          const branchTop = t.y + t.height + 0.5;
+          if (playerFeetY > branchTop || playerHeadY < branchBottom) continue;
+
+          // Realistic conical branch profile: widest at base / lower third, tapering to crown
+          const relY = Math.max(0, Math.min(1.0, (playerMidY - t.y) / Math.max(1.0, t.height)));
+          const taper = relY <= 0.35 ? 1.0 : Math.max(0.25, 1.0 - ((relY - 0.35) / 0.65) * 0.70);
+          const branchRadiusAtY = (t.branchRadius || 4.5) * taper;
+          const touchThreshold = branchRadiusAtY + 0.45; // Accounts for player body, ski length, and poles
+
+          const dx = this.position.x - t.x;
+          const dz = this.position.z - t.z;
+          let dist = Math.hypot(dx, dz);
+          let isTouchingBranch = dist < touchThreshold;
+
+          // Continuous swept motion check so fast-moving skiers never skip branch touches between frames
+          if (!isTouchingBranch) {
+            const segX = this.position.x - prevX;
+            const segZ = this.position.z - prevZ;
+            const segLenSq = segX * segX + segZ * segZ;
+            if (segLenSq > 1e-4) {
+              let tParam = ((t.x - prevX) * segX + (t.z - prevZ) * segZ) / segLenSq;
+              if (tParam > 0 && tParam < 1) {
+                const closeX = prevX + tParam * segX;
+                const closeZ = prevZ + tParam * segZ;
+                const cdx = closeX - t.x;
+                const cdz = closeZ - t.z;
+                const sweptDist = Math.hypot(cdx, cdz);
+                if (sweptDist < touchThreshold) {
+                  isTouchingBranch = true;
+                  dist = sweptDist;
+                }
+              }
+            }
+          }
+
+          if (isTouchingBranch) {
+            this.leafParticles.spawnBrush(
+              this.position,
+              this.velocity,
+              this.camera.position,
+              _scratchForwardXZ,
+              _scratchRightXZ,
+              t,
+              dist,
+              branchRadiusAtY
+            );
+          }
+        }
+      }
+    }
 
     let momentumDampened = false;
 
@@ -828,6 +908,18 @@ export class PlayerController {
             this.velocity.x = tx * remainingSpeed + nx * 0.8;
             this.velocity.z = tz * remainingSpeed + nz * 0.8;
 
+            // Spawn explosive burst of torn leaves from trunk impact
+            if (this.leafParticles) {
+              this.leafParticles.spawnImpact(
+                this.position,
+                this.velocity,
+                this.camera.position,
+                _scratchForwardXZ,
+                _scratchRightXZ,
+                t
+              );
+            }
+
             // Impact camera shake feedback proportional to hit severity
             if (Math.abs(vn) > 3.0) {
               this.trauma = Math.min(0.45, this.trauma + Math.min(0.35, Math.abs(vn) * 0.025));
@@ -863,6 +955,10 @@ export class PlayerController {
       this.character.dispose();
       this.character = null;
       this.snowboard = null;
+    }
+    if (this.leafParticles) {
+      this.leafParticles.dispose(this.scene);
+      this.leafParticles = null;
     }
   }
 }

@@ -98,7 +98,7 @@ sunLight.shadow.camera.near = 15;
 sunLight.shadow.camera.far = 360;
 
 // Optimized shadow frustum: forward-biased along skier view direction
-const shadowCoverage = 65;
+const shadowCoverage = 48;
 sunLight.shadow.camera.left = -shadowCoverage;
 sunLight.shadow.camera.right = shadowCoverage;
 sunLight.shadow.camera.top = shadowCoverage;
@@ -109,6 +109,11 @@ sunLight.shadow.radius = 1.4;
 
 scene.add(sunLight);
 scene.add(sunLight.target);
+
+// Throttled shadow map updates: 50% GPU fillrate savings
+renderer.shadowMap.autoUpdate = false;
+sunLight.shadow.needsUpdate = true;
+let shadowFrameCounter = 0;
 
 // Skybox & IBL
 let skyboxTexture = null;
@@ -140,9 +145,9 @@ const skyboxPromise = new Promise((resolve) => {
 // --- Modular Procedural Terrain System with Mountains and Rock Texturing ---
 const terrainManager = new TerrainManager(scene, {
   chunkSize: 64,         // World units per chunk
-  chunkSegments: 36,     // High-efficiency vertex budget: 44% less geometry with smooth silhouettes
-  renderDistance: 5,     // Expanded view distance for landscape vista
-  maxBuildsPerFrame: 1,  // Strict 1-chunk build cap per frame to guarantee 60 FPS pacing without frame drops
+  chunkSegments: 28,     // High-efficiency near vertex budget: smooth curves with low CPU overhead
+  renderDistance: 4,     // 256m view distance perfectly matching fog distance (260m)
+  maxBuildsPerFrame: 1,  // Strict 1-chunk build cap per frame with 4ms time budget
   seed: Math.random() * 10000, // Randomized terrain generation seed
   treeModel: '/models/trees_pack.fbx', // Populate world with coniferous trees pack
   renderer,              // WebGLRenderer for offscreen impostor baking & GPU features
@@ -250,6 +255,12 @@ function animate() {
   sunLight.position.copy(shadowCenter).add(sunOffset);
   sunLight.target.position.copy(shadowCenter);
   sunLight.target.updateMatrixWorld();
+
+  // Throttle shadow map re-render pass to alternate frames: 50% GPU fillrate savings
+  shadowFrameCounter++;
+  if (shadowFrameCounter % 2 === 0) {
+    sunLight.shadow.needsUpdate = true;
+  }
 
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, worldCamera);
