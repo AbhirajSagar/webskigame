@@ -11,6 +11,7 @@ const _scratchDownhill = new THREE.Vector3();
 const _scratchMoveDir = new THREE.Vector3();
 const _scratchCamDesired = new THREE.Vector3();
 const _scratchCamEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _scratchLocalOffset = new THREE.Vector3();
 
 /**
  * PlayerController
@@ -38,13 +39,15 @@ const _scratchCamEuler = new THREE.Euler(0, 0, 0, 'YXZ');
  */
 export class PlayerController {
   /**
-   * @param {THREE.Camera} camera
+   * @param {THREE.Camera} camera - 2nd camera (worldCamera, renders terrain, trees, skybox)
    * @param {HTMLElement} domElement
    * @param {TerrainManager} terrainManager
    * @param {THREE.Scene} [scene=null]
+   * @param {THREE.Camera} [characterCamera=null] - 1st camera (character & snowboard overlay camera)
    */
-  constructor(camera, domElement, terrainManager, scene = null) {
+  constructor(camera, domElement, terrainManager, scene = null, characterCamera = null) {
     this.camera = camera;
+    this.characterCamera = characterCamera;
     this.domElement = domElement;
     this.terrainManager = terrainManager;
     this.scene = scene || this.terrainManager?.scene;
@@ -84,7 +87,7 @@ export class PlayerController {
     this.pitch = 0.08;           // Natural forward eye-line looking down mountain
     this.minPitch = -0.95;       // ~ -55° looking up at alpine peaks / sky
     this.maxPitch = 1.25;        // ~ +72° looking down at snowboard / boots
-    this.camera.near = 0.25;     // Clean near clipping to prevent skull/collar interior clipping
+    this.camera.near = 0.08;     // Clean near clipping to prevent skull/collar interior clipping
     this.camera.updateProjectionMatrix();
     this.focusHeight = 1.15;     // Eye-line reference height
     this.focusY = 20 + this.focusHeight;
@@ -107,16 +110,11 @@ export class PlayerController {
     this.treeCollisionRadius = 0.35;
     this._nearbyTrunks = [];
 
-    // Input state
+    // Input state: strictly forward acceleration (W / ArrowUp)
     this.keys = {
       forward: false,
-      backward: false,
-      left: false,
-      right: false,
-      up: false,
-      down: false,
-      sprint: false,
     };
+    this.steerBank = 0.0;
 
     // Touch controls state
     this.leftTouchIds = new Set();
@@ -132,6 +130,10 @@ export class PlayerController {
     this.character = new CharacterModel(this.scene, this.terrainManager);
     // Backward compatibility alias for any existing reference
     this.snowboard = this.character;
+
+    // Stabilized head tracking offset (relative to player ground position)
+    this._smoothedHeadOffset = new THREE.Vector3(0, this.focusHeight + 0.25, 0);
+    this._headOffsetInitialized = false;
 
     this._initInput();
 
@@ -179,8 +181,8 @@ export class PlayerController {
 
   /**
    * Touch controls:
-   * - Left half of screen: Press and hold = Accelerate; drag left/right = Carve
-   * - Right half of screen: Touch swipe / drag = Camera view axis rotation (yaw & pitch)
+   * - Left half of screen: Press and hold = Accelerate (W equivalent)
+   * - Right half of screen: Touch drag = Camera steering (mouse equivalent)
    */
   _initTouchControls() {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -194,8 +196,6 @@ export class PlayerController {
 
         if (touch.clientX < halfWidth) {
           this.leftTouchIds.add(touch.identifier);
-          this.leftTouchStartX = touch.clientX;
-          this.leftTouchCurrentX = touch.clientX;
         } else {
           if (this.rightTouchId === null) {
             this.rightTouchId = touch.identifier;
@@ -214,14 +214,6 @@ export class PlayerController {
 
       for (let i = 0; i < e.changedTouches.length; i++) {
         const touch = e.changedTouches[i];
-
-        if (this.leftTouchIds.has(touch.identifier)) {
-          this.leftTouchCurrentX = touch.clientX;
-          const dragX = this.leftTouchCurrentX - this.leftTouchStartX;
-          // Virtual stick steering: drag left = carve left, drag right = carve right
-          this.keys.left = dragX < -25;
-          this.keys.right = dragX > 25;
-        }
 
         if (touch.identifier === this.rightTouchId) {
           const dx = touch.clientX - this.prevRightX;
@@ -244,10 +236,6 @@ export class PlayerController {
 
         if (this.leftTouchIds.has(touch.identifier)) {
           this.leftTouchIds.delete(touch.identifier);
-          if (this.leftTouchIds.size === 0) {
-            this.keys.left = false;
-            this.keys.right = false;
-          }
         }
 
         if (touch.identifier === this.rightTouchId) {
@@ -274,9 +262,7 @@ export class PlayerController {
   }
 
   _updateTouchState() {
-    const leftCount = this.leftTouchIds.size;
-    this.keys.forward = leftCount > 0;
-    this.keys.sprint = leftCount >= 2;
+    this.keys.forward = this.leftTouchIds.size > 0;
   }
 
   _onKeyDown(e) {
@@ -284,71 +270,14 @@ export class PlayerController {
       return;
     }
 
-    switch (e.code) {
-      case 'KeyF':
-        this.toggleMode();
-        break;
-      case 'KeyW':
-      case 'ArrowUp':
-        this.keys.forward = true;
-        break;
-      case 'KeyS':
-      case 'ArrowDown':
-        this.keys.backward = true;
-        break;
-      case 'KeyA':
-      case 'ArrowLeft':
-        this.keys.left = true;
-        break;
-      case 'KeyD':
-      case 'ArrowRight':
-        this.keys.right = true;
-        break;
-      case 'Space':
-        this.keys.up = true;
-        break;
-      case 'KeyC':
-      case 'ControlLeft':
-      case 'ControlRight':
-        this.keys.down = true;
-        break;
-      case 'ShiftLeft':
-      case 'ShiftRight':
-        this.keys.sprint = true;
-        break;
+    if (e.code === 'KeyW' || e.code === 'ArrowUp') {
+      this.keys.forward = true;
     }
   }
 
   _onKeyUp(e) {
-    switch (e.code) {
-      case 'KeyW':
-      case 'ArrowUp':
-        this.keys.forward = false;
-        break;
-      case 'KeyS':
-      case 'ArrowDown':
-        this.keys.backward = false;
-        break;
-      case 'KeyA':
-      case 'ArrowLeft':
-        this.keys.left = false;
-        break;
-      case 'KeyD':
-      case 'ArrowRight':
-        this.keys.right = false;
-        break;
-      case 'Space':
-        this.keys.up = false;
-        break;
-      case 'KeyC':
-      case 'ControlLeft':
-      case 'ControlRight':
-        this.keys.down = false;
-        break;
-      case 'ShiftLeft':
-      case 'ShiftRight':
-        this.keys.sprint = false;
-        break;
+    if (e.code === 'KeyW' || e.code === 'ArrowUp') {
+      this.keys.forward = false;
     }
   }
 
@@ -407,28 +336,23 @@ export class PlayerController {
     // Dedicated First-Person (FPS) mode
   }
 
+  /**
+   * Sets the 1st camera dedicated to rendering character and snowboard on top.
+   * @param {THREE.Camera} characterCamera
+   */
+  setCharacterCamera(characterCamera) {
+    this.characterCamera = characterCamera;
+    if (this.characterCamera) {
+      this.characterCamera.position.copy(this.camera.position);
+      this.characterCamera.quaternion.copy(this.camera.quaternion);
+      this.characterCamera.fov = this.camera.fov;
+      this.characterCamera.updateProjectionMatrix();
+    }
+  }
+
   toggleMode() {
-    this.mode = this.mode === 'ski' ? 'fly' : 'ski';
-    this.velocity.set(0, 0, 0);
-
-    if (this.mode === 'ski') {
-      const groundH = this.terrainManager.getHeightAt(this.position.x, this.position.z);
-      if (this.position.y < groundH) {
-        this.position.y = groundH;
-        this.isGrounded = true;
-      } else {
-        this.isGrounded = false;
-      }
-      this.focusY = this.position.y + this.focusHeight;
-      this._updateCamera(0.016, true);
-    }
-
-    if (this.onModeChange) {
-      this.onModeChange(this.mode);
-    }
-    if (this.character) {
-      this.character.setVisible(this.mode === 'ski');
-    }
+    this.mode = 'ski';
+    return this.mode;
   }
 
   getSpeedKmh() {
@@ -521,17 +445,23 @@ export class PlayerController {
     const targetFov = Math.min(this.maxFov, Math.max(this.minFov, this.baseFov + speedBonus + altBonus));
     this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 3.8, dt);
     this.camera.updateProjectionMatrix();
+
+    if (this.characterCamera && this.characterCamera.fov !== this.camera.fov) {
+      this.characterCamera.fov = this.camera.fov;
+      this.characterCamera.updateProjectionMatrix();
+    }
   }
 
   /**
    * Updates First-Person (FPS) Camera locked directly at character's head position.
-   * Features dynamic head tracking, carving banking lean, and landing trauma shake.
+   * Features dynamic head tracking, neck flexion when looking down at the snowboard,
+   * zero-velocity-lag stabilization, and a rock-solid level horizon.
    * @param {number} dt - Delta time
    * @param {boolean} [snap=false]
    * @private
    */
   _updateCamera(dt, snap = false) {
-    // 1. Position camera directly at character's eye position
+    // 1. Position camera directly at character's head / eye position
     if (this.character && this.character.isLoaded) {
       this.character.getHeadPosition(_scratchCamDesired);
     } else {
@@ -539,29 +469,50 @@ export class PlayerController {
       _scratchCamDesired.y += this.focusHeight + 0.25;
     }
 
-    // Offset camera forward along player heading out of the skull to eye/visor line (0.22m forward)
-    _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
-    _scratchCamDesired.addScaledVector(_scratchForwardXZ, 0.22);
+    // Dynamic neck flexion arc:
+    // When looking down, natural neck articulation tilts the head forward,
+    // subtly arcing the eyes forward (+0.09m) and down (-0.02m) as pitch increases.
+    // When looking level or up, the exact neutral eye position (+0.22m forward) is maintained.
+    const downPitch = Math.max(0, this.pitch);
+    const pitchRatio = Math.min(1.0, downPitch / this.maxPitch);
+    const forwardOffset = 0.22 + 0.09 * pitchRatio;
+    const verticalOffset = -0.02 * pitchRatio;
 
-    // 2. Landing Trauma Camera Shake
-    if (this.trauma > 0.001) {
-      this.trauma = Math.max(0, this.trauma - dt * 3.5);
-      this.shakeTime += dt;
-      const shake = this.trauma * this.trauma;
-      const t = this.shakeTime * 38.0;
-      _scratchCamDesired.x += (Math.sin(t * 1.7) + Math.cos(t * 3.1) * 0.5) * 0.04 * shake;
-      _scratchCamDesired.y += (Math.cos(t * 1.5) + Math.sin(t * 2.9) * 0.5) * 0.04 * shake;
+    _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
+    _scratchCamDesired.addScaledVector(_scratchForwardXZ, forwardOffset);
+    _scratchCamDesired.y += verticalOffset;
+
+    // 2. Head tracking stabilization:
+    // Track the head bone position relative to the player ground position.
+    // By smoothing the local head offset, the camera stays locked to the character's head
+    // (faithfully following every crouch, lean, and stance) with zero velocity lag,
+    // while absorbing keyframe animation jitter.
+    _scratchLocalOffset.subVectors(_scratchCamDesired, this.position);
+
+    if (snap || !this._headOffsetInitialized) {
+      this._smoothedHeadOffset.copy(_scratchLocalOffset);
+      this._headOffsetInitialized = true;
+    } else {
+      const smoothRate = 24.0;
+      this._smoothedHeadOffset.x = THREE.MathUtils.damp(this._smoothedHeadOffset.x, _scratchLocalOffset.x, smoothRate, dt);
+      this._smoothedHeadOffset.y = THREE.MathUtils.damp(this._smoothedHeadOffset.y, _scratchLocalOffset.y, smoothRate, dt);
+      this._smoothedHeadOffset.z = THREE.MathUtils.damp(this._smoothedHeadOffset.z, _scratchLocalOffset.z, smoothRate, dt);
     }
 
-    this.camera.position.copy(_scratchCamDesired);
+    this.camera.position.copy(this.position).add(this._smoothedHeadOffset);
 
     // 3. Camera Rotation
-    // Yaw: turns left/right with steering/mouse
+    // Yaw: turns left/right with mouse steering
     // Pitch: tilts down/up (negative pitch tilts up, positive pitch tilts down)
-    // Bank roll: lean into carving turns
-    const bankRoll = this.character ? -this.character.currentBankAngle * 0.45 : 0;
-    _scratchCamEuler.set(-this.pitch, this.yaw, bankRoll, 'YXZ');
+    // Roll: locked to 0 for a rock-solid, level horizon with zero wobble
+    _scratchCamEuler.set(-this.pitch, this.yaw, 0, 'YXZ');
     this.camera.quaternion.setFromEuler(_scratchCamEuler);
+
+    // Synchronize 1st camera (character & snowboard overlay camera)
+    if (this.characterCamera) {
+      this.characterCamera.position.copy(this.camera.position);
+      this.characterCamera.quaternion.copy(this.camera.quaternion);
+    }
   }
 
   /**
@@ -574,29 +525,14 @@ export class PlayerController {
 
   /**
    * Grounded alpine skiing and snowboarding physics engine
+   * Accelerates with W / Up Arrow; steers smoothly via mouse gaze
    * @private
    */
   _updateSkiPhysics(dt, forward, right) {
-    _scratchForwardXZ.set(forward.x, 0, forward.z).normalize();
-    _scratchRightXZ.set(right.x, 0, right.z).normalize();
-
-    const isBoosting = this.keys.sprint;
-    const isAccelerating = this.keys.forward || isBoosting;
-
-    // Active Keyboard Carving Steering (A & D or Arrow keys)
-    const turnRate = 2.2; // rad/s
-    if (this.keys.left) {
-      this.yaw += turnRate * dt;
-      this.velocity.addScaledVector(_scratchRightXZ, -18.0 * dt);
-    }
-    if (this.keys.right) {
-      this.yaw -= turnRate * dt;
-      this.velocity.addScaledVector(_scratchRightXZ, 18.0 * dt);
-    }
-
-    // Recompute heading vectors after potential yaw adjustment
     _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
     _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+
+    const isAccelerating = this.keys.forward;
 
     const currentGroundHeight = this.terrainManager.getHeightAt(this.position.x, this.position.z);
     const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z);
@@ -611,79 +547,75 @@ export class PlayerController {
       _scratchGVec.set(0, -this.gravity, 0);
       _scratchDownhill.copy(_scratchGVec).addScaledVector(normal, -_scratchGVec.dot(normal));
 
-      const downhillBoost = isBoosting ? this.tuckBonus * 1.5 : (this.keys.forward ? this.tuckBonus : 1.0);
+      const downhillBoost = isAccelerating ? this.tuckBonus : 1.0;
       this.velocity.addScaledVector(_scratchDownhill, dt * downhillBoost);
 
-      // 2. Active Push on Flats / Gentle Slopes (W or Left Touch)
+      // 2. Active Push on Flats / Gentle Slopes (W or ArrowUp)
       if (this.keys.forward) {
         const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
         if (horizSpeed < this.pushAccel) {
           const pushForce = (this.pushAccel - horizSpeed) * 3.5;
           this.velocity.addScaledVector(_scratchForwardXZ, pushForce * dt);
+        } else {
+          // Continuous tuck speed boost when holding W
+          this.velocity.addScaledVector(_scratchForwardXZ, 6.0 * dt);
         }
       }
 
-      // Active snowplow / hockey-stop braking (S or ArrowDown)
-      if (this.keys.backward) {
-        const brakeDecel = this.brakePower * dt;
-        const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-        if (currentSpeed > 0.001) {
-          const newSpeed = Math.max(0, currentSpeed - brakeDecel);
-          const ratio = newSpeed / currentSpeed;
-          this.velocity.x *= ratio;
-          this.velocity.z *= ratio;
+      // 3. Directional Mouse Steering & Carving Grip
+      const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+      if (currentSpeed > 0.05) {
+        const lakeData = this.terrainManager.heightmap?.getLakeData ? this.terrainManager.heightmap.getLakeData(this.position.x, this.position.z) : null;
+        const isOnIce = lakeData && lakeData.isFrozenLake;
+
+        let frictionRate = isAccelerating ? this.snowFriction * 0.4 : this.snowFriction;
+        if (isOnIce) {
+          frictionRate *= 0.22;
         }
+
+        const newSpeed = Math.max(0, currentSpeed * (1.0 - frictionRate * dt));
+
+        // Smooth carving alignment: turn velocity towards forward heading (mouse steering)
+        const currentDirX = this.velocity.x / currentSpeed;
+        const currentDirZ = this.velocity.z / currentSpeed;
+
+        const targetDirX = _scratchForwardXZ.x;
+        const targetDirZ = _scratchForwardXZ.z;
+
+        const steerRate = isOnIce ? 4.5 : 8.5;
+        const lerpFactor = Math.min(1.0, steerRate * dt);
+        let dirX = currentDirX + (targetDirX - currentDirX) * lerpFactor;
+        let dirZ = currentDirZ + (targetDirZ - currentDirZ) * lerpFactor;
+        const dirLen = Math.hypot(dirX, dirZ);
+        if (dirLen > 0.0001) {
+          dirX /= dirLen;
+          dirZ /= dirLen;
+        }
+
+        this.velocity.x = dirX * newSpeed;
+        this.velocity.z = dirZ * newSpeed;
+
+        // Compute carving bank angle for the character model (lean into turn)
+        const lateralDot = this.velocity.x * _scratchRightXZ.x + this.velocity.z * _scratchRightXZ.z;
+        const carveRatio = THREE.MathUtils.clamp(-lateralDot / Math.max(4.0, currentSpeed), -1.0, 1.0);
+        this.steerBank = carveRatio * 0.35;
+      } else {
+        this.steerBank = 0.0;
       }
 
-      // 3. Shift Boost Propulsion
-      if (isBoosting) {
-        const boostPower = 28.0;
-        this.velocity.addScaledVector(_scratchForwardXZ, boostPower * dt);
-      }
-
-      // 4. Directional Carving & Edge Grip
-      const currentForwardSpeed = this.velocity.x * _scratchForwardXZ.x + this.velocity.z * _scratchForwardXZ.z;
-      const currentLateralSpeed = this.velocity.x * _scratchRightXZ.x + this.velocity.z * _scratchRightXZ.z;
-
-      // Detect frozen lake ice surface
-      const lakeData = this.terrainManager.heightmap?.getLakeData ? this.terrainManager.heightmap.getLakeData(this.position.x, this.position.z) : null;
-      const isOnIce = lakeData && lakeData.isFrozenLake;
-
-      let frictionRate = isAccelerating ? this.snowFriction * 0.5 : this.snowFriction;
-      if (isOnIce) {
-        frictionRate *= 0.22;
-      }
-      const dampedForward = currentForwardSpeed * Math.max(0, 1.0 - frictionRate * dt);
-      const grip = isOnIce ? this.carvingGrip * 0.65 : this.carvingGrip;
-      const dampedLateral = currentLateralSpeed * Math.max(0, 1.0 - grip * dt);
-
-      this.velocity.x = _scratchForwardXZ.x * dampedForward + _scratchRightXZ.x * dampedLateral;
-      this.velocity.z = _scratchForwardXZ.z * dampedForward + _scratchRightXZ.z * dampedLateral;
-
-      // Active jump pop (Spacebar) off lips or flat snow
-      if (this.keys.up) {
-        this.velocity.y = Math.max(this.velocity.y + this.jumpForce, this.jumpForce);
-        this.isGrounded = false;
-        this.airTime = 0.05;
-        this.position.y += 0.12;
-        this.keys.up = false;
-      }
-
-      // 5. Ground Contact & Slope Following
+      // 4. Ground Contact & Slope Following
       const nextX = this.position.x + this.velocity.x * dt;
       const nextZ = this.position.z + this.velocity.z * dt;
       const nextGroundHeight = this.terrainManager.getHeightAt(nextX, nextZ);
 
       const requiredSlopeVy = dt > 0.0001 ? (nextGroundHeight - this.position.y) / dt : 0;
 
-      // 6. Slope Crest Takeoff Detection (Natural Airtime)
-      if (requiredSlopeVy < this.velocity.y - 1.5 && this.velocity.y > 0.5) {
-        this.isGrounded = false;
-        this.airTime = 0.05;
-        this.position.x = nextX;
-        this.position.z = nextZ;
-        this.position.y += this.velocity.y * dt;
-      } else if (requiredSlopeVy < -this.gravity * 0.45 && Math.hypot(this.velocity.x, this.velocity.z) > 18.0) {
+      // 5. Natural Airtime Takeoff (crest launch or ramp launch)
+      const ballisticVy = this.velocity.y - this.gravity * dt;
+      const isDroppingOverCrest = requiredSlopeVy < ballisticVy - 2.5 && currentSpeed > 15.0;
+      const isLaunchingOffRamp = this.velocity.y > 1.0 && requiredSlopeVy < this.velocity.y - 1.5;
+
+      if (isDroppingOverCrest || isLaunchingOffRamp) {
         this.isGrounded = false;
         this.airTime = 0.05;
         this.position.x = nextX;
@@ -704,8 +636,8 @@ export class PlayerController {
       this.velocity.x -= this.velocity.x * activeAirDrag * dt;
       this.velocity.z -= this.velocity.z * activeAirDrag * dt;
 
-      if (isBoosting) {
-        this.velocity.addScaledVector(_scratchForwardXZ, 12.0 * dt);
+      if (isAccelerating) {
+        this.velocity.addScaledVector(_scratchForwardXZ, 8.0 * dt);
       }
 
       this.position.addScaledVector(this.velocity, dt);
@@ -713,7 +645,6 @@ export class PlayerController {
       // Ground landing collision detection
       const testGroundY = this.terrainManager.getHeightAt(this.position.x, this.position.z);
       if (this.position.y <= testGroundY) {
-        const landAirTime = this.airTime;
         this.position.y = testGroundY;
         this.isGrounded = true;
         this.airTime = 0.0;
@@ -723,14 +654,10 @@ export class PlayerController {
         if (normalSpeed < 0) {
           this.velocity.addScaledVector(landNormal, -normalSpeed);
         }
-
-        if (landAirTime >= 0.15) {
-          this.trauma = Math.min(0.35, (landAirTime - 0.1) * 0.25);
-        }
       }
     }
 
-    // 7. Tree Trunk Collisions
+    // 6. Tree Trunk Collisions
     this._resolveTrunkCollisions(prevX, prevZ);
 
     // Terminal velocity clamping
@@ -825,10 +752,6 @@ export class PlayerController {
 
             this.velocity.x = vtX * friction - nx * vn * bounce;
             this.velocity.z = vtZ * friction - nz * vn * bounce;
-
-            if (Math.abs(vn) > 4.0) {
-              this.trauma = Math.min(0.4, this.trauma + Math.min(0.25, Math.abs(vn) * 0.015));
-            }
           }
         }
       }
@@ -846,31 +769,7 @@ export class PlayerController {
    * @private
    */
   _updateFlyMode(dt) {
-    _scratchMoveDir.set(0, 0, 0);
-
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    const rgt = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-
-    if (this.keys.forward) _scratchMoveDir.add(fwd);
-    if (this.keys.backward) _scratchMoveDir.sub(fwd);
-    if (this.keys.right) _scratchMoveDir.add(rgt);
-    if (this.keys.left) _scratchMoveDir.sub(rgt);
-    if (this.keys.up) _scratchMoveDir.y += 1;
-    if (this.keys.down) _scratchMoveDir.y -= 1;
-
-    if (_scratchMoveDir.lengthSq() > 0.0001) {
-      _scratchMoveDir.normalize();
-      const speed = this.keys.sprint ? this.flySprintSpeed : this.flySpeed;
-      this.velocity.copy(_scratchMoveDir.multiplyScalar(speed));
-      this.camera.position.addScaledVector(this.velocity, dt);
-      this.position.copy(this.camera.position);
-    } else {
-      this.velocity.set(0, 0, 0);
-    }
-
-    // Set rotation directly from pitch/yaw in fly mode
-    _scratchCamEuler.set(-this.pitch, this.yaw, 0, 'YXZ');
-    this.camera.quaternion.setFromEuler(_scratchCamEuler);
+    // Spectator fly mode disabled; ski physics is active mode
   }
 
   dispose() {

@@ -51,6 +51,7 @@ export class CharacterModel {
     // Root world-space rig containing character, snowboard, and particle emitter
     this.group = new THREE.Group();
     this.group.name = 'RiderRig';
+    this.group.layers.set(1);
 
     // Model and animation references
     this.character = null;
@@ -64,6 +65,7 @@ export class CharacterModel {
 
     // First-Person (FPS) camera & head tracking
     this.headBone = null;
+    this.neckBone = null;
     this.headTopBone = null;
     this.isFirstPerson = true;
 
@@ -73,7 +75,7 @@ export class CharacterModel {
     this.currentBrakeAngle = 0.0;
     this._initialized = false;
     this.scaleMultiplier = options.scaleMultiplier ?? 1.0;
-    this.fallHeightThreshold = options.fallHeightThreshold ?? 3.0; // Height in meters above ground to trigger falling animation
+    this.fallHeightThreshold = options.fallHeightThreshold ?? 1.0; // Height in meters above ground to trigger falling animation
 
     // Snow spray particle system
     this.sprayMesh = null;
@@ -103,6 +105,7 @@ export class CharacterModel {
       depthWrite: false,
     });
     this.sprayMesh = new THREE.InstancedMesh(geo, mat, MAX_SPRAY_PARTICLES);
+    this.sprayMesh.layers.set(0); // Renders with world (Camera 2)
     this.sprayMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.sprayMesh.frustumCulled = false;
 
@@ -226,7 +229,7 @@ export class CharacterModel {
             const mats = Array.isArray(child.material) ? child.material : [child.material];
             mats.forEach((m) => {
               if (!m) return;
-              m.side = THREE.DoubleSide;
+              m.side = THREE.FrontSide;
 
               ['map', 'normalMap', 'specularMap', 'bumpMap', 'emissiveMap'].forEach((slot) => {
                 if (m[slot]) {
@@ -307,14 +310,16 @@ export class CharacterModel {
       this.currentState = 'cruise';
       this.action = this.currentAction;
 
-      // Locate head bones for First-Person (FPS) camera tracking
+      // Locate head & neck bones for First-Person (FPS) camera tracking
       this.headBone = this.character.getObjectByName('mixamorigHead') || null;
+      this.neckBone = this.character.getObjectByName('mixamorigNeck') || null;
       this.headTopBone = this.character.getObjectByName('mixamorigHeadTop_End') || null;
       if (this.headBone && this.isFirstPerson) {
         this.headBone.scale.set(0.0001, 0.0001, 0.0001);
       }
 
       this.group.add(this.character);
+      this._setupCharacterLayers(this.character);
     }
 
     // 3. Setup Snowboard Mesh
@@ -376,6 +381,7 @@ export class CharacterModel {
       });
 
       this.group.add(this.board);
+      this._setupCharacterLayers(this.board);
     }
 
     this.isLoaded = true;
@@ -451,12 +457,12 @@ export class CharacterModel {
   getHeadPosition(target) {
     if (this.headBone && this.character) {
       this.headBone.getWorldPosition(target);
-      // Offset from neck/jaw to eye level inside helmet/goggles
+      // Offset from neck/head bone to eye level inside helmet/goggles
       target.addScaledVector(this.currentNormal, 0.12);
       return target;
     }
     target.copy(this.group.position);
-    target.addScaledVector(this.currentNormal, 1.35);
+    target.addScaledVector(this.currentNormal, 1.38);
     return target;
   }
 
@@ -476,6 +482,18 @@ export class CharacterModel {
       }
       this.group.updateMatrixWorld(true);
     }
+  }
+
+  /**
+   * Assigns character and snowboard mesh hierarchy to Layer 1 for the 1st camera.
+   * @param {THREE.Object3D} root
+   * @private
+   */
+  _setupCharacterLayers(root) {
+    if (!root) return;
+    root.traverse((child) => {
+      child.layers.set(1);
+    });
   }
 
   /**
@@ -541,15 +559,9 @@ export class CharacterModel {
     _scratchRight.crossVectors(_scratchUp, _scratchForward).normalize();
 
     // 4. Carving Banking / Roll:
-    let targetBank = 0.0;
-    if (player.keys.left) {
-      targetBank -= 0.35; // Bank left (-20°)
-    }
-    if (player.keys.right) {
-      targetBank += 0.35; // Bank right (+20°)
-    }
-
-    this.currentBankAngle = THREE.MathUtils.damp(this.currentBankAngle, targetBank, 12.0, dt);
+    // Banks rider and snowboard into turns driven by mouse steering
+    const targetBank = player.steerBank || 0.0;
+    this.currentBankAngle = THREE.MathUtils.damp(this.currentBankAngle, targetBank, 10.0, dt);
 
     if (Math.abs(this.currentBankAngle) > 0.001) {
       _scratchUp.applyAxisAngle(_scratchForward, this.currentBankAngle);
@@ -558,40 +570,30 @@ export class CharacterModel {
 
     const altitude = player.getAltitude ? player.getAltitude() : (player.altitude || 0);
 
-    // 5. Dynamic Snowplow / Hockey-Stop Braking:
-    let targetBrake = 0.0;
-    if (player.keys.backward && player.speed > 2.0 && (player.isGrounded || altitude < 1.0)) {
-      targetBrake = 0.78; // ~45 degrees sideways slide
-    }
-    this.currentBrakeAngle = THREE.MathUtils.damp(this.currentBrakeAngle, targetBrake, 14.0, dt);
-
-    if (Math.abs(this.currentBrakeAngle) > 0.001) {
-      _scratchForward.applyAxisAngle(_scratchUp, this.currentBrakeAngle);
-      _scratchRight.applyAxisAngle(_scratchUp, this.currentBrakeAngle);
-    }
+    // 5. Snowboard slide alignment (zero brake slide since brake control was removed)
+    this.currentBrakeAngle = 0.0;
 
     // 6. Apply Orthonormal Rotation Basis Matrix
     _scratchBasisMatrix.makeBasis(_scratchRight, _scratchUp, _scratchForward);
     this.group.quaternion.setFromRotationMatrix(_scratchBasisMatrix);
 
     // 7. Animation State Machine & Blending:
-    // - Falling: triggered only when airborne AND height above ground exceeds threshold (big cliff drops / massive air)
-    //   Once triggered, persists until touchdown to avoid premature stance snaps mid-plummet.
-    // - Boost: when grounded or hopping small bumps and pressing W / Up / Sprint
-    // - Cruise: default grounded or small-jump carving stance
+    // - Falling: triggered only when airborne AND height above ground exceeds threshold (big cliff drops)
+    // - Boost: when holding W / ArrowUp acceleration
+    // - Cruise: default carving stance
     const isAirborne = player.isAirborne();
 
     let targetState = 'cruise';
     if (isAirborne && (altitude >= this.fallHeightThreshold || (this.currentState === 'fall' && !player.isGrounded))) {
       targetState = 'fall';
-    } else if (player.keys.forward || player.keys.sprint) {
+    } else if (player.keys.forward) {
       targetState = 'boost';
     } else {
       targetState = 'cruise';
     }
 
     if (targetState !== this.currentState) {
-      const fadeDuration = targetState === 'fall' ? 0.2 : (targetState === 'boost' ? 0.18 : (this.currentState === 'fall' ? 0.2 : 0.22));
+      const fadeDuration = targetState === 'fall' ? 0.2 : (targetState === 'boost' ? 0.25 : 0.3);
       this.fadeToAction(targetState, fadeDuration);
       this.currentState = targetState;
     }
@@ -606,19 +608,16 @@ export class CharacterModel {
             targetTimeScale = 0.2; // Idle balance at starting summit
           } else {
             const speedFactor = Math.min(1.0, player.speed / 40.0);
-            targetTimeScale = THREE.MathUtils.lerp(0.7, 1.65, speedFactor);
+            targetTimeScale = THREE.MathUtils.lerp(0.7, 1.4, speedFactor);
           }
         } else if (this.currentState === 'boost') {
-          // Fast, energetic accelerating kick rhythm scaling with velocity
+          // Energetic accelerating push cadence
           const boostFactor = Math.min(1.0, player.speed / 30.0);
-          targetTimeScale = THREE.MathUtils.lerp(1.85, 2.95, boostFactor);
-          if (player.keys.sprint) targetTimeScale += 0.45;
+          targetTimeScale = THREE.MathUtils.lerp(1.2, 1.8, boostFactor);
         } else if (this.currentState === 'fall') {
-          // Vertical downward velocity determines falling animation playback speed:
-          // The faster the rider falls vertically, the faster and more frantically the animation plays.
           const downwardVy = player.velocity ? Math.max(0, -player.velocity.y) : 0;
           const fallRatio = Math.min(1.0, downwardVy / 30.0);
-          targetTimeScale = THREE.MathUtils.lerp(0.8, 3.0, fallRatio);
+          targetTimeScale = THREE.MathUtils.lerp(0.8, 2.2, fallRatio);
         }
 
         this.currentAction.timeScale = targetTimeScale;
@@ -650,18 +649,17 @@ export class CharacterModel {
 
     const isGrounded = player.isGrounded;
     const speed = player.speed || 0;
-    const isCarving = player.keys.left || player.keys.right;
-    const isBraking = player.keys.backward && speed > 3.0;
+    const isCarving = Math.abs(this.currentBankAngle) > 0.08;
     const isBoosting = this.currentState === 'boost';
 
     if (isGrounded && speed > 2.0 && player.isPlaying) {
-      const spawnCount = isBraking ? 4 : (isCarving ? 3 : (isBoosting ? 3 : (speed > 15 ? 2 : 1)));
+      const spawnCount = isCarving ? 3 : (isBoosting ? 3 : (speed > 15 ? 2 : 1));
 
       _scratchSprayPos.set(0, 0.05, -0.85).applyMatrix4(this.group.matrixWorld);
 
       for (let s = 0; s < spawnCount; s++) {
-        const spreadX = (Math.random() - 0.5) * (isBraking ? 1.6 : 0.6);
-        const spreadY = 0.8 + Math.random() * (isBraking ? 2.5 : (isBoosting ? 1.6 : 1.2));
+        const spreadX = (Math.random() - 0.5) * 0.6;
+        const spreadY = 0.8 + Math.random() * (isBoosting ? 1.6 : 1.2);
         const spreadZ = -0.4 - Math.random() * (speed * 0.08);
 
         _scratchSprayVel.set(spreadX, spreadY, spreadZ).applyQuaternion(this.group.quaternion);

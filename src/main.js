@@ -38,13 +38,27 @@ const scene = new THREE.Scene();
 const fogColor = new THREE.Color(0xc6cdd5);
 scene.fog = new THREE.Fog(fogColor, 30, 260);
 
-// --- Camera ---
-const camera = new THREE.PerspectiveCamera(
+// --- Dual-Camera Setup ---
+// Camera 2: World Camera (renders terrain, mountains, trees, skybox, snow spray, and scenery)
+const worldCamera = new THREE.PerspectiveCamera(
+  65,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  1500
+);
+worldCamera.layers.set(0);
+
+// Camera 1: Character & Snowboard Camera (renders on top of the world)
+const characterCamera = new THREE.PerspectiveCamera(
   65,
   window.innerWidth / window.innerHeight,
   0.05,
-  1500
+  100
 );
+characterCamera.layers.set(1);
+
+// Backward-compatibility alias for modules referencing camera
+const camera = worldCamera;
 
 // --- Renderer ---
 const canvas = document.querySelector('#webgl');
@@ -65,11 +79,17 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 // --- Lighting & HDRI Skybox ---
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+ambientLight.layers.enable(0);
+ambientLight.layers.enable(1);
 scene.add(ambientLight);
 
 const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.8);
 sunLight.position.set(130, 190, 90);
 sunLight.castShadow = true;
+sunLight.layers.enable(0);
+sunLight.layers.enable(1);
+sunLight.shadow.camera.layers.enable(0);
+sunLight.shadow.camera.layers.enable(1);
 // Ultra-lightweight 512x512 shadow map: 75% fewer texels than 1024
 // Combines with PCFSoftShadowMap to give smooth alpine shadows with near-zero fillrate cost
 sunLight.shadow.mapSize.width = 512;
@@ -128,11 +148,11 @@ const terrainManager = new TerrainManager(scene, {
   renderer,              // WebGLRenderer for offscreen impostor baking & GPU features
 });
 
-// --- Player Controller (Third-Person TPS Skater & Snowboard System) ---
-const player = new PlayerController(camera, canvas, terrainManager, scene);
+// --- Player Controller (First-Person FPS Skater & Snowboard System) ---
+const player = new PlayerController(worldCamera, canvas, terrainManager, scene, characterCamera);
 
 // Expose handle for runtime telemetry and debugging
-window.__GAME = { scene, camera, renderer, player, terrainManager };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager };
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
@@ -154,9 +174,10 @@ Promise.race([
   }
 
   // Pre-generate immediate terrain chunks and compile WebGL shaders
-  terrainManager.update(player.position, 0, camera);
-  renderer.compile(scene, camera);
-  renderer.render(scene, camera);
+  terrainManager.update(player.position, 0, worldCamera);
+  renderer.compile(scene, worldCamera);
+  renderer.compile(scene, characterCamera);
+  renderer.render(scene, worldCamera);
 
   // Transition loading overlay to reveal Play button
   loadingOverlay.setReady();
@@ -175,8 +196,11 @@ window.addEventListener('resize', () => {
   const width = window.innerWidth;
   const height = window.innerHeight;
 
-  camera.aspect = width / height;
-  camera.updateProjectionMatrix();
+  worldCamera.aspect = width / height;
+  worldCamera.updateProjectionMatrix();
+
+  characterCamera.aspect = width / height;
+  characterCamera.updateProjectionMatrix();
 
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
@@ -199,11 +223,11 @@ function animate() {
   const delta = Math.min(rawDelta, 0.05);
   const elapsedTime = clock.getElapsedTime();
 
-  // 1. Update player physics, Third-Person camera, rider animations, and snow spray
+  // 1. Update player physics, cameras, rider animations, and snow spray
   player.update(delta);
 
-  // Forward-biased sun shadow frustum: biases shadow coverage around third-person rider
-  camera.getWorldDirection(forwardDir);
+  // Forward-biased sun shadow frustum: biases shadow coverage around rider
+  worldCamera.getWorldDirection(forwardDir);
   forwardDir.y = 0;
   if (forwardDir.lengthSq() > 0.001) forwardDir.normalize();
 
@@ -219,10 +243,20 @@ function animate() {
   sunLight.target.updateMatrixWorld();
 
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
-  terrainManager.update(player.position, elapsedTime, camera);
+  terrainManager.update(player.position, elapsedTime, worldCamera);
 
-  // 3. Render complete world scene (including rider, board, snow spray, terrain, trees, and soft shadows)
-  renderer.render(scene, camera);
+  // 3. Two-Camera Composite Render:
+  // Pass 1: Render everything else with 2nd camera (worldCamera)
+  renderer.autoClear = true;
+  renderer.render(scene, worldCamera);
+
+  // Pass 2: Render character & snowboard always on top with 1st camera (characterCamera)
+  const savedBg = scene.background;
+  scene.background = null;
+  renderer.autoClear = false;
+  renderer.clearDepth();
+  renderer.render(scene, characterCamera);
+  scene.background = savedBg;
 
   // 4. Update FPS & Ski / Flight Telemetry
   fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode);
