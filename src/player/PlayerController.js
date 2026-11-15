@@ -114,6 +114,8 @@ export class PlayerController {
     this.keys = {
       forward: false,
     };
+    this.keyboardForward = false;
+    this.touchForward = false;
     this.steerBank = 0.0;
 
     // Touch controls state
@@ -180,9 +182,11 @@ export class PlayerController {
   }
 
   /**
-   * Touch controls:
-   * - Left half of screen: Press and hold = Accelerate (W equivalent)
-   * - Right half of screen: Touch drag = Camera steering (mouse equivalent)
+   * Touch controls for mobile / tablet devices:
+   * - Left half of screen: Press and hold = Tuck / Accelerate (W equivalent)
+   * - Right half of screen: Drag = Steer heading and pitch (Mouse equivalent)
+   * - Single-finger drag anywhere: Smoothly guides gaze / steering
+   * - Any touch when stopped: Automatically launches forward along gaze heading
    */
   _initTouchControls() {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -205,12 +209,20 @@ export class PlayerController {
         }
       }
 
+      // If user touches with one finger on the left side, also allow steering with that finger if no right touch exists
+      if (this.rightTouchId === null && e.touches.length === 1) {
+        const singleTouch = e.touches[0];
+        this.rightTouchId = singleTouch.identifier;
+        this.prevRightX = singleTouch.clientX;
+        this.prevRightY = singleTouch.clientY;
+      }
+
       this._updateTouchState();
     };
 
     const onTouchMove = (e) => {
       if (e.cancelable) e.preventDefault();
-      const sensitivity = 0.0032;
+      const sensitivity = 0.0035;
 
       for (let i = 0; i < e.changedTouches.length; i++) {
         const touch = e.changedTouches[i];
@@ -242,7 +254,7 @@ export class PlayerController {
           this.rightTouchId = null;
           for (let j = 0; j < e.touches.length; j++) {
             const t = e.touches[j];
-            if (t.clientX >= window.innerWidth * 0.5 && !this.leftTouchIds.has(t.identifier)) {
+            if (!this.leftTouchIds.has(t.identifier)) {
               this.rightTouchId = t.identifier;
               this.prevRightX = t.clientX;
               this.prevRightY = t.clientY;
@@ -255,14 +267,16 @@ export class PlayerController {
       this._updateTouchState();
     };
 
-    this.domElement.addEventListener('touchstart', onTouchStart, { passive: false });
+    // Listen on window to ensure 100% touch capture across the whole screen on mobile browsers
+    window.addEventListener('touchstart', onTouchStart, { passive: false });
     window.addEventListener('touchmove', onTouchMove, { passive: false });
     window.addEventListener('touchend', onTouchEnd, { passive: false });
     window.addEventListener('touchcancel', onTouchEnd, { passive: false });
   }
 
   _updateTouchState() {
-    this.keys.forward = this.leftTouchIds.size > 0;
+    this.touchForward = this.leftTouchIds.size > 0;
+    this.keys.forward = this.keyboardForward || this.touchForward;
   }
 
   _onKeyDown(e) {
@@ -270,14 +284,16 @@ export class PlayerController {
       return;
     }
 
-    if (e.code === 'KeyW' || e.code === 'ArrowUp') {
+    if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') {
+      this.keyboardForward = true;
       this.keys.forward = true;
     }
   }
 
   _onKeyUp(e) {
-    if (e.code === 'KeyW' || e.code === 'ArrowUp') {
-      this.keys.forward = false;
+    if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') {
+      this.keyboardForward = false;
+      this.keys.forward = this.touchForward;
     }
   }
 
@@ -380,6 +396,14 @@ export class PlayerController {
 
   start() {
     this.isPlaying = true;
+    // Launch skier downhill along heading with authentic starting momentum (9 m/s = ~32 km/h)
+    _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
+    if (_scratchForwardXZ.lengthSq() < 0.001) {
+      _scratchForwardXZ.set(0, 0, -1);
+    }
+    const launchSpeed = 9.0;
+    this.velocity.x = _scratchForwardXZ.x * launchSpeed;
+    this.velocity.z = _scratchForwardXZ.z * launchSpeed;
   }
 
   update(deltaTime) {
@@ -560,34 +584,36 @@ export class PlayerController {
       const downhillBoost = isAccelerating ? this.tuckBonus : 1.0;
       this.velocity.addScaledVector(_scratchDownhill, dt * downhillBoost);
 
-      // 2. Active Push on Flats / Gentle Slopes (W or ArrowUp)
-      if (this.keys.forward) {
-        const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-        if (horizSpeed < this.pushAccel) {
-          const pushForce = (this.pushAccel - horizSpeed) * 3.5;
+      // 2. Active Push on Flats / Gentle Slopes (W or ArrowUp or mobile touch)
+      const hasTouch = (this.leftTouchIds && this.leftTouchIds.size > 0) || this.rightTouchId !== null;
+      const initialHorizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+
+      if (isAccelerating || (initialHorizSpeed < 2.5 && hasTouch)) {
+        if (initialHorizSpeed < this.pushAccel) {
+          const pushForce = Math.max(16.0, (this.pushAccel - initialHorizSpeed) * 4.0);
           this.velocity.addScaledVector(_scratchForwardXZ, pushForce * dt);
         } else {
-          // Continuous tuck speed boost when holding W
-          this.velocity.addScaledVector(_scratchForwardXZ, 6.0 * dt);
+          // Continuous tuck speed boost when holding W or left touch
+          this.velocity.addScaledVector(_scratchForwardXZ, 9.0 * dt);
         }
       }
 
       // 3. Directional Mouse Steering & Carving Grip
-      const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-      if (currentSpeed > 0.05) {
+      const postPushSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+      if (postPushSpeed > 0.05) {
         const lakeData = this.terrainManager.heightmap?.getLakeData ? this.terrainManager.heightmap.getLakeData(this.position.x, this.position.z) : null;
         const isOnIce = lakeData && lakeData.isFrozenLake;
 
-        let frictionRate = isAccelerating ? this.snowFriction * 0.4 : this.snowFriction;
+        let frictionRate = isAccelerating ? this.snowFriction * 0.35 : this.snowFriction;
         if (isOnIce) {
           frictionRate *= 0.22;
         }
 
-        const newSpeed = Math.max(0, currentSpeed * (1.0 - frictionRate * dt));
+        const newSpeed = Math.max(0, postPushSpeed * (1.0 - frictionRate * dt));
 
         // Smooth carving alignment: turn velocity towards forward heading (mouse steering)
-        const currentDirX = this.velocity.x / currentSpeed;
-        const currentDirZ = this.velocity.z / currentSpeed;
+        const currentDirX = this.velocity.x / postPushSpeed;
+        const currentDirZ = this.velocity.z / postPushSpeed;
 
         const targetDirX = _scratchForwardXZ.x;
         const targetDirZ = _scratchForwardXZ.z;
@@ -607,14 +633,14 @@ export class PlayerController {
 
         // Compute carving bank angle for the character model (lean into turn)
         const lateralDot = this.velocity.x * _scratchRightXZ.x + this.velocity.z * _scratchRightXZ.z;
-        const carveRatio = THREE.MathUtils.clamp(-lateralDot / Math.max(4.0, currentSpeed), -1.0, 1.0);
+        const carveRatio = THREE.MathUtils.clamp(-lateralDot / Math.max(4.0, newSpeed), -1.0, 1.0);
         this.steerBank = carveRatio * 0.35;
       } else {
         this.steerBank = 0.0;
-        // If stopped or nearly stopped and pressing forward, immediately launch along gaze heading
-        if (this.keys.forward) {
-          this.velocity.x = _scratchForwardXZ.x * 3.5;
-          this.velocity.z = _scratchForwardXZ.z * 3.5;
+        // If stopped or nearly stopped and pressing forward or touching on mobile, immediately launch along gaze heading
+        if (isAccelerating || hasTouch) {
+          this.velocity.x = _scratchForwardXZ.x * 4.0;
+          this.velocity.z = _scratchForwardXZ.z * 4.0;
         }
       }
 
@@ -626,8 +652,9 @@ export class PlayerController {
       const requiredSlopeVy = dt > 0.0001 ? (nextGroundHeight - this.position.y) / dt : 0;
 
       // 5. Natural Airtime Takeoff (crest launch or ramp launch)
+      const currentGroundSpeed = Math.hypot(this.velocity.x, this.velocity.z);
       const ballisticVy = this.velocity.y - this.gravity * dt;
-      const isDroppingOverCrest = requiredSlopeVy < ballisticVy - 2.5 && currentSpeed > 15.0;
+      const isDroppingOverCrest = requiredSlopeVy < ballisticVy - 2.5 && currentGroundSpeed > 15.0;
       const isLaunchingOffRamp = this.velocity.y > 1.0 && requiredSlopeVy < this.velocity.y - 1.5;
 
       if (isDroppingOverCrest || isLaunchingOffRamp) {

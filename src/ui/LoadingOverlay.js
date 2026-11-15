@@ -1,22 +1,25 @@
 /**
  * Triggers browser fullscreen mode with cross-browser compatibility.
- * Must be invoked within a user gesture (e.g., click event).
+ * Non-blocking fire-and-forget for mobile/tablet/desktop compatibility.
  * @param {HTMLElement} [element=document.documentElement]
- * @returns {Promise<void>}
  */
-export async function triggerBrowserFullscreen(element = document.documentElement) {
+export function triggerBrowserFullscreen(element = document.documentElement) {
   try {
     if (element.requestFullscreen) {
-      await element.requestFullscreen();
+      const p = element.requestFullscreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     } else if (element.webkitRequestFullscreen) {
-      await element.webkitRequestFullscreen();
+      const p = element.webkitRequestFullscreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     } else if (element.mozRequestFullScreen) {
-      await element.mozRequestFullScreen();
+      const p = element.mozRequestFullScreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     } else if (element.msRequestFullscreen) {
-      await element.msRequestFullscreen();
+      const p = element.msRequestFullscreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     }
   } catch (err) {
-    console.warn('Fullscreen request was blocked or not permitted:', err?.message || err);
+    // Non-critical, ignore
   }
 }
 
@@ -40,18 +43,46 @@ export class LoadingOverlay {
   }
 
   _initEvents() {
-    if (this.playBtn) {
-      this.playBtn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+    if (!this.playBtn) return;
 
-        if (this.isPlaying) return;
-        this.isPlaying = true;
+    const handlePlay = (e) => {
+      if (e) {
+        if (typeof e.preventDefault === 'function') e.preventDefault();
+        if (typeof e.stopPropagation === 'function') e.stopPropagation();
+      }
 
-        // 1. Enter browser fullscreen
-        await triggerBrowserFullscreen();
+      if (this.isPlaying) return;
+      this.isPlaying = true;
 
-        // 2. Request canvas pointer lock if available
+      // 1. Immediately hide loading overlay and disable its pointer events so touches pass directly to game
+      if (this.overlay) {
+        this.overlay.style.pointerEvents = 'none';
+        this.overlay.classList.add('fade-out');
+        setTimeout(() => {
+          this.overlay.style.display = 'none';
+        }, 350);
+      }
+
+      // Ensure window has focus so keyboard events (W / ArrowUp) register immediately
+      try {
+        window.focus();
+      } catch (err) {}
+
+      // 2. Fire registered start callbacks immediately (starts game & launches player)
+      for (const cb of this._playCallbacks) {
+        try {
+          cb();
+        } catch (err) {
+          console.error('Error in onPlay callback:', err);
+        }
+      }
+
+      // 3. Attempt browser fullscreen non-blockingly (fire-and-forget)
+      triggerBrowserFullscreen();
+
+      // 4. Request pointer lock only on non-touch desktop devices with a mouse
+      const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+      if (!isTouchDevice) {
         const canvas = document.querySelector('#webgl');
         try {
           const lockPromise = canvas?.requestPointerLock?.();
@@ -59,25 +90,13 @@ export class LoadingOverlay {
             lockPromise.catch(() => {});
           }
         } catch (err) {}
+      }
+    };
 
-        // 3. Fire registered start callbacks
-        for (const cb of this._playCallbacks) {
-          try {
-            cb();
-          } catch (err) {
-            console.error('Error in onPlay callback:', err);
-          }
-        }
-
-        // 4. Hide loading overlay
-        if (this.overlay) {
-          this.overlay.classList.add('fade-out');
-          setTimeout(() => {
-            this.overlay.style.display = 'none';
-          }, 400);
-        }
-      });
-    }
+    // Listen to click, touchend, and pointerup to guarantee immediate firing on all mobile devices
+    this.playBtn.addEventListener('click', handlePlay);
+    this.playBtn.addEventListener('touchend', handlePlay, { passive: false });
+    this.playBtn.addEventListener('pointerup', handlePlay);
   }
 
   /**

@@ -38,7 +38,9 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 999999;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.35s ease;
+  touch-action: manipulation;
+  pointer-events: auto;
 }
 
 #loading-overlay.fade-out {
@@ -73,6 +75,11 @@ body {
   cursor: pointer;
   outline: none;
   transition: background 0.2s ease, transform 0.1s ease;
+  touch-action: manipulation;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #play-btn:hover {
@@ -81,5 +88,6 @@ body {
 }
 
 #play-btn:active {
+  background: #1e40af;
   transform: scale(0.97);
 }

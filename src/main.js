@@ -115,7 +115,7 @@ let skyboxTexture = null;
 const skyboxPromise = new Promise((resolve) => {
   const rgbeLoader = new RGBELoader();
   rgbeLoader.load(
-    '/kloppenheim_06_puresky_2k.hdr',
+    '/skybox.hdr',
     (texture) => {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       scene.background = texture;
@@ -161,27 +161,36 @@ const treesPromise = terrainManager.treeGenerator.load();
 const riderPromise = player.character.load();
 
 // Coordinate asset loading: wait until skybox, trees, and rider finish
-const MAX_LOAD_TIMEOUT = 12000;
+const MAX_LOAD_TIMEOUT = 10000;
 const timeoutPromise = new Promise((resolve) => setTimeout(resolve, MAX_LOAD_TIMEOUT));
 
 Promise.race([
   Promise.all([skyboxPromise, treesPromise, riderPromise]),
   timeoutPromise,
-]).then(() => {
-  // If skybox loaded, ensure tree impostors have environment reflection
-  if (skyboxTexture && terrainManager?.treeGenerator?.isLoaded) {
-    terrainManager.treeGenerator.initImpostors(renderer, skyboxTexture);
-  }
+])
+  .then(() => {
+    try {
+      // If skybox loaded, ensure tree impostors have environment reflection
+      if (skyboxTexture && terrainManager?.treeGenerator?.isLoaded) {
+        terrainManager.treeGenerator.initImpostors(renderer, skyboxTexture);
+      }
 
-  // Pre-generate immediate terrain chunks and compile WebGL shaders
-  terrainManager.update(player.position, 0, worldCamera);
-  renderer.compile(scene, worldCamera);
-  renderer.compile(scene, characterCamera);
-  renderer.render(scene, worldCamera);
+      // Pre-generate immediate terrain chunks and compile WebGL shaders
+      terrainManager.update(player.position, 0, worldCamera);
+      renderer.compile(scene, worldCamera);
+      renderer.compile(scene, characterCamera);
+      renderer.render(scene, worldCamera);
+    } catch (err) {
+      console.warn('Pre-warming WebGL render warning:', err);
+    }
 
-  // Transition loading overlay to reveal Play button
-  loadingOverlay.setReady();
-});
+    // Transition loading overlay to reveal Play button
+    loadingOverlay.setReady();
+  })
+  .catch((err) => {
+    console.warn('Asset loader finished with warning:', err);
+    loadingOverlay.setReady();
+  });
 
 // Launch downhill ski run when user clicks Play button
 loadingOverlay.onPlay(() => {

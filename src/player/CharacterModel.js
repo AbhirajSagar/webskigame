@@ -300,7 +300,9 @@ export class CharacterModel {
       this.neckBone = this.character.getObjectByName('mixamorigNeck') || null;
       this.headTopBone = this.character.getObjectByName('mixamorigHeadTop_End') || null;
       
-      if (this.headBone) this.headBone.scale.set(1.0, 1.0, 1.0);
+      if (this.headBone && this.isFirstPerson) {
+        this.headBone.scale.set(0.0001, 0.0001, 0.0001);
+      }
 
       this.group.add(this.character);
       this._setupCharacterLayers(this.character);
@@ -455,7 +457,11 @@ export class CharacterModel {
   setFirstPersonMode(isFps) {
     this.isFirstPerson = !!isFps;
     if (this.headBone) {
-      this.headBone.scale.set(1.0, 1.0, 1.0);
+      if (this.isFirstPerson) {
+        this.headBone.scale.set(0.0001, 0.0001, 0.0001);
+      } else {
+        this.headBone.scale.set(1.0, 1.0, 1.0);
+      }
       this.group.updateMatrixWorld(true);
     }
   }
@@ -605,9 +611,13 @@ export class CharacterModel {
     // 9. Snow Spray Particle Update
     this._updateSpray(dt, player);
 
-    // 10. Preserve natural head & helmet bone scale
-    if (this.headBone && this.headBone.scale.x < 0.5) {
-      this.headBone.scale.set(1.0, 1.0, 1.0);
+    // 10. First-Person Mode Bone Scale & Matrix Sync
+    if (this.headBone) {
+      if (this.isFirstPerson) {
+        this.headBone.scale.set(0.0001, 0.0001, 0.0001);
+      } else if (this.headBone.scale.x < 0.5) {
+        this.headBone.scale.set(1.0, 1.0, 1.0);
+      }
     }
     this.group.updateMatrixWorld(true);
   }
@@ -740,12 +750,18 @@ export class CharacterModel {
       this.mixer = null;
     }
 
-    const disposeNode = (node) => {
+    const disposeNode = (node) => 
+    {
       if (!node) return;
-      node.traverse((child) => {
-        if (child.isMesh) {
-          if (child.geometry) child.geometry.dispose();
-          if (child.material) {
+      node.traverse((child) => 
+      {
+        if (child.isMesh) 
+        {
+          if (child.geometry) 
+            child.geometry.dispose();
+
+          if (child.material) 
+          {
             const mats = Array.isArray(child.material) ? child.material : [child.material];
             mats.forEach((m) => {
               if (m?.map) m.map.dispose();
@@ -760,7 +776,8 @@ export class CharacterModel {
     disposeNode(this.character);
     disposeNode(this.board);
 
-    if (this.sprayMesh) {
+    if (this.sprayMesh) 
+    {
       if (this.sprayMesh.geometry) this.sprayMesh.geometry.dispose();
       if (this.sprayMesh.material) this.sprayMesh.material.dispose();
       this.sprayMesh = null;
