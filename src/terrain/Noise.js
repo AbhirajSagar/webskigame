@@ -164,13 +164,47 @@ export class TerrainHeightmap {
     this.simplexWarp = new SimplexNoise(seed + 303);
     this.simplexCrags = new SimplexNoise(seed + 404);
     this.simplexRollers = new SimplexNoise(seed + 505);
+    this.simplexBiome = new SimplexNoise(seed + 606);
+    this.simplexPark = new SimplexNoise(seed + 707);
+    this.simplexCanyon = new SimplexNoise(seed + 808);
     this._lakeCellCache = new Map();
   }
 
   /**
+   * Evaluates macro-scale biome coordinates and returns blended zone weights.
+   * Provides distinct geological regions across the infinite world:
+   * 1. Cirque: High Alpine razor arêtes, jagged couloirs, sheer amphitheaters (Freeride Steeps)
+   * 2. Park: Banked half-pipe canyons, rhythmic roller jumps, natural kicker lips (Terrain Park)
+   * 3. Bowls: Rolling alpine meadows, undulating powder spines, wide cruisers (Glade Skiing)
+   * @param {number} x
+   * @param {number} z
+   * @returns {{ raw: number, wCirque: number, wPark: number, wBowls: number, primary: 'cirque'|'park'|'bowls' }}
+   */
+  getBiomeData(x, z) {
+    const warp1 = this.simplexWarp.noise2D(x * 0.0006, z * 0.0006) * 75.0;
+    const warp2 = this.simplexWarp.noise2D((x + 65.3) * 0.0020, (z + 41.7) * 0.0020) * 18.0;
+    const wx = x + warp1 + warp2;
+    const wz = z + this.simplexWarp.noise2D((x + 120.0) * 0.0006, (z + 85.0) * 0.0006) * 75.0 + warp2;
+
+    const biomeRaw = this.simplexBiome.fbm(wx * 0.00045 + 37.0, wz * 0.00045 + 83.0, 3, 2.0, 0.5);
+    const wCirque = smoothstep(0.12, 0.52, biomeRaw);
+    const wPark = smoothstep(-0.25, 0.12, biomeRaw) * (1.0 - smoothstep(0.18, 0.58, biomeRaw));
+    const wBowls = Math.max(0.0, 1.0 - wCirque - wPark);
+
+    let primary = 'bowls';
+    if (wCirque > wPark && wCirque > wBowls) primary = 'cirque';
+    else if (wPark > wCirque && wPark > wBowls) primary = 'park';
+
+    return { raw: biomeRaw, wCirque, wPark, wBowls, primary };
+  }
+
+  /**
    * Calculates pure geological terrain elevation prior to any lake carving.
-   * Features dynamic alpine terrain flow: rolling moraines, natural half-pipe gullies,
-   * banked ski bowls, sharp arêtes, and rhythmic piste rollers (no dead flat plains).
+   * Features dynamic multi-biome alpine terrain:
+   * - High Alpine Cirques: knife-edge arêtes, towering 215m peaks, sheer couloirs
+   * - Natural Terrain Park: parabolic U-shaped halfpipes with banked rideable walls, camel-hump roller jumps
+   * - Rolling Glades: flowing alpine powder bowls and undulating moraines
+   * - Natural Kicker Lips: sculpted launch lips on convex drop-offs
    * @param {number} x
    * @param {number} z
    * @returns {number}
@@ -186,35 +220,64 @@ export class TerrainHeightmap {
     const continentalNoise = this.simplexBase.fbm(wx * 0.00055, wz * 0.00055, 3, 2.0, 0.5);
     const continental = (continentalNoise + 1.0) * 0.5;
 
-    // 3. Valley Floor: Glacial Moraines & Natural Carving Gullies (Zero Dead Flats)
+    // 3. Multi-Biome Weights
+    const biome = this.getBiomeData(x, z);
+
+    // -------------------------------------------------------------
+    // FEATURE A: Natural Halfpipes & Banked Canyon Gullies (Park Zone)
+    // Parabolic U-cross section with banked walls instead of sharp V-grooves
+    // -------------------------------------------------------------
+    const pipeNoise = this.simplexCanyon.noise2D(wx * 0.0016 + 15.0, wz * 0.0016 + 42.0);
+    const pipeBank = Math.pow(Math.abs(pipeNoise), 1.6) * 18.0 - 10.0;
+    // Rhythmic camel humps / ski roller jumps (wavelength ~45m - 75m)
+    const rollerWave = Math.sin(wx * 0.028 + wz * 0.015) * Math.cos(wz * 0.022);
+    const camelHump = Math.pow(Math.max(0.0, rollerWave), 1.5) * 4.2;
+    const parkTerrain = (pipeBank + camelHump) * biome.wPark;
+
+    // -------------------------------------------------------------
+    // FEATURE B: Valley Floor: Glacial Moraines & S-Curving Valleys
+    // -------------------------------------------------------------
     const valleyRollers = this.simplexBase.fbm(wx * 0.0022, wz * 0.0022, 3, 2.0, 0.48) * 14.0;
     const gullyNoise = this.simplexBase.noise2D(wx * 0.0014 + 12.0, wz * 0.0014 + 35.0);
-    const gully = -Math.abs(gullyNoise) * 12.0;
-    const valleyBase = valleyRollers + gully;
+    const gullyU = -(1.0 - smoothstep(0.0, 0.55, Math.abs(gullyNoise))) * 12.0;
+    const valleyBase = (valleyRollers + gullyU) * (1.0 - biome.wPark * 0.7);
 
-    // 4. Foothills, Rolling Ski Bowls & Spines
+    // -------------------------------------------------------------
+    // FEATURE C: Foothills, Rolling Ski Bowls & Spines
+    // -------------------------------------------------------------
     const hillWeight = smoothstep(0.12, 0.54, continental);
     const hillsFbm = this.simplexHills.fbm(wx * 0.0016, wz * 0.0016, 4, 2.0, 0.48) * 55.0;
     const hillBillow = Math.abs(this.simplexHills.noise2D(wx * 0.0028 + 7.0, wz * 0.0028 + 19.0)) * 20.0;
     const hills = (hillsFbm + hillBillow) * hillWeight;
 
-    // 5. Alpine Peaks, Razor Arêtes & Glacial Cirques
+    // -------------------------------------------------------------
+    // FEATURE D: Alpine Peaks, Razor Arêtes & Glacial Cirques
+    // -------------------------------------------------------------
     const mountainWeight = smoothstep(0.35, 0.76, continental);
     const ridge1 = this.simplexMountains.ridged(wx * 0.0010, wz * 0.0010, 5, 2.1, 0.55);
     const ridge2 = this.simplexMountains.ridged(wx * 0.0024, wz * 0.0024, 4, 2.0, 0.50);
     const rawBillow = this.simplexMountains.noise2D(wx * 0.0008 + 45.0, wz * 0.0008 + 72.0);
     const billow = Math.sqrt(rawBillow * rawBillow + 0.02);
-    const shapedRidge = Math.pow(ridge1, 1.35) * 1.25;
+
+    // In Cirque zones, ridges are razor sharp and peaks are imposing
+    const cirqueBoost = 1.0 + biome.wCirque * 0.35;
+    const shapedRidge = Math.pow(ridge1, 1.35) * 1.25 * cirqueBoost;
     const mountainMass = (shapedRidge * 195.0 + ridge2 * 48.0 + billow * 55.0) * mountainWeight;
 
-    // 6. Crags & Steep Chutes
+    // -------------------------------------------------------------
+    // FEATURE E: Crags & Steep Chutes
+    // -------------------------------------------------------------
     const cragWeight = smoothstep(0.42, 0.85, continental);
-    const crag = this.simplexCrags.noise2D(wx * 0.0035, wz * 0.0035) * 6.5 * cragWeight;
+    const crag = this.simplexCrags.noise2D(wx * 0.0035, wz * 0.0035) * 7.5 * cragWeight * (1.0 + biome.wCirque * 0.5);
 
-    // 7. Ski Piste Rollers & Berms (Tactile Flow)
+    // -------------------------------------------------------------
+    // FEATURE F: Ski Piste Rollers & Natural Kicker Lips (Tactile Flow)
+    // -------------------------------------------------------------
     const rollers = this.simplexRollers.fbm(wx * 0.008, wz * 0.008, 2, 2.0, 0.45) * 2.8;
+    const kickerNoise = this.simplexRollers.noise2D(wx * 0.016 + 53.0, wz * 0.016 + 89.0);
+    const kickerLip = Math.pow(Math.max(0.0, kickerNoise), 2.2) * 2.4 * (biome.wPark * 0.8 + 0.35);
 
-    return valleyBase + hills + mountainMass + crag + rollers;
+    return valleyBase + parkTerrain + hills + mountainMass + crag + rollers + kickerLip;
   }
 
   /**

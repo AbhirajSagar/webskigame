@@ -7,8 +7,8 @@ import * as THREE from 'three';
 export const DEFAULT_SNOW_CONFIG = {
   // Chromatic Snow Palette (pure radiant alpine snow with sky-blue ambient shadows)
   sunlitColor: '#f2f5f9',
-  shadowColor: '#4d88e8',
-  creviceColor: '#2b3644',
+  shadowColor: '#2d5ba8',
+  creviceColor: '#1d2735',
 
   // Slope & Wind Scour
   slopeMin: 0.42,
@@ -574,8 +574,8 @@ export class TerrainMaterialFactory {
         float cavityAO = clamp(tangentSnowN.z * 0.65 + 0.35, 0.0, 1.0);
 
         vec3 ambientSnowColor = mix(shadowSnowColor, creviceSnowColor, (1.0 - cavityAO) * 0.60);
-        vec3 dynamicSnowAlbedo = mix(ambientSnowColor, sunlitSnowColor, microSun * 0.72 + 0.28);
-        dynamicSnowAlbedo *= mix(0.78, 1.0, cavityAO); // Organic depth in sastrugi hollows
+        vec3 dynamicSnowAlbedo = mix(ambientSnowColor, sunlitSnowColor, microSun * 0.85 + 0.15);
+        dynamicSnowAlbedo *= mix(0.75, 1.0, cavityAO); // Organic depth in sastrugi hollows
 
         vec3 terrainColor = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
 
@@ -760,9 +760,9 @@ export class TerrainMaterialFactory {
           float forwardTrans = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) * pow(1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0), 2.0);
           vec3 sssGlow = uSSSColor * forwardTrans * uSSSIntensity * sunLit;
 
-          // Glancing Fresnel Sheen
+          // Glancing Fresnel Sheen (gated by illumination to keep shadows deep and rich)
           float fresnel = pow(1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0), 4.0);
-          vec3 sheenGlow = uSheenColor * fresnel * uSheenIntensity;
+          vec3 sheenGlow = uSheenColor * fresnel * (uSheenIntensity * (sunLit * 0.7 + 0.3));
 
           outgoingLight += (sparkleColor + sssGlow + sheenGlow) * g_snowFactor;
         }

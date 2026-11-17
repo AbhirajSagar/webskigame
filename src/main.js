@@ -75,45 +75,43 @@ renderer.toneMappingExposure = 1.0;
 
 // Enable soft real-time dynamic shadow mapping
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 
 // --- Lighting & HDRI Skybox ---
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+// Soft sky-tinted ambient with balanced intensity ensures shadows are deep, clear, and visible
+const ambientLight = new THREE.AmbientLight(0xd6e5f7, 0.22);
 ambientLight.layers.enable(0);
 ambientLight.layers.enable(1);
 scene.add(ambientLight);
 
-const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.8);
+const sunLight = new THREE.DirectionalLight(0xfff5e6, 2.1);
 sunLight.position.set(130, 190, 90);
 sunLight.castShadow = true;
 sunLight.layers.enable(0);
 sunLight.layers.enable(1);
 sunLight.shadow.camera.layers.enable(0);
 sunLight.shadow.camera.layers.enable(1);
-// Ultra-lightweight 512x512 shadow map: 75% fewer texels than 1024
-// Combines with PCFSoftShadowMap to give smooth alpine shadows with near-zero fillrate cost
-sunLight.shadow.mapSize.width = 512;
-sunLight.shadow.mapSize.height = 512;
+// Crisp 1024x1024 shadow map: sharp branch and trunk silhouettes on snow
+sunLight.shadow.mapSize.width = 1024;
+sunLight.shadow.mapSize.height = 1024;
 sunLight.shadow.camera.near = 15;
 sunLight.shadow.camera.far = 450;
 
 // Optimized shadow frustum: forward-biased along skier view direction
-const shadowCoverage = 48;
+const shadowCoverage = 52;
 sunLight.shadow.camera.left = -shadowCoverage;
 sunLight.shadow.camera.right = shadowCoverage;
 sunLight.shadow.camera.top = shadowCoverage;
 sunLight.shadow.camera.bottom = -shadowCoverage;
-sunLight.shadow.bias = -0.0004;
-sunLight.shadow.normalBias = 0.05;
-sunLight.shadow.radius = 1.4;
+sunLight.shadow.bias = -0.0003;
+sunLight.shadow.normalBias = 0.03;
+sunLight.shadow.radius = 1.2;
 
 scene.add(sunLight);
 scene.add(sunLight.target);
 
-// Throttled shadow map updates: 50% GPU fillrate savings
-renderer.shadowMap.autoUpdate = false;
-sunLight.shadow.needsUpdate = true;
-let shadowFrameCounter = 0;
+// Auto-update shadow map during world render pass
+renderer.shadowMap.autoUpdate = true;
 
 // Skybox & IBL
 let skyboxTexture = null;
@@ -147,6 +145,7 @@ const terrainManager = new TerrainManager(scene, {
   chunkSize: 96,         // World units per chunk (expanded for vast alpine scale)
   chunkSegments: 32,     // High-efficiency near vertex budget: smooth curves with low CPU overhead
   renderDistance: 4,     // 384m view distance matching expanded vistas and fog
+  treeShadowRange: 55,   // Optimized shadow range: only trees around the player within 55m cast shadows
   maxBuildsPerFrame: 1,  // Strict 1-chunk build cap per frame with 4ms time budget
   seed: Math.random() * 10000, // Randomized terrain generation seed
   treeModel: '/models/trees_pack.fbx', // Populate world with coniferous trees pack
@@ -227,7 +226,7 @@ const clock = new THREE.Clock();
 const sunOffset = new THREE.Vector3(130, 190, 90);
 const forwardDir = new THREE.Vector3();
 const shadowCenter = new THREE.Vector3();
-const shadowTexelSize = (2 * shadowCoverage) / 512;
+const shadowTexelSize = (2 * shadowCoverage) / 1024;
 
 function animate() {
   requestAnimationFrame(animate);
@@ -256,27 +255,24 @@ function animate() {
   sunLight.target.position.copy(shadowCenter);
   sunLight.target.updateMatrixWorld();
 
-  // Throttle shadow map re-render pass to alternate frames: 50% GPU fillrate savings
-  shadowFrameCounter++;
-  if (shadowFrameCounter % 2 === 0) {
-    sunLight.shadow.needsUpdate = true;
-  }
-
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, worldCamera);
 
   // 3. Two-Camera Composite Render:
-  // Pass 1: Render everything else with 2nd camera (worldCamera)
+  // Pass 1: Render world (terrain, trees, shadows, environment) with worldCamera
   renderer.autoClear = true;
   renderer.render(scene, worldCamera);
 
   // Pass 2: Render character & snowboard always on top with 1st camera (characterCamera)
+  // Disable shadowMap autoUpdate during character overlay pass to avoid redundant re-rendering
+  renderer.shadowMap.autoUpdate = false;
   const savedBg = scene.background;
   scene.background = null;
   renderer.autoClear = false;
   renderer.clearDepth();
   renderer.render(scene, characterCamera);
   scene.background = savedBg;
+  renderer.shadowMap.autoUpdate = true;
 
   // 4. Update FPS & Ski / Flight Telemetry (including real-time airborne height)
   fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode, player.getAltitude());

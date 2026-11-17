@@ -21,6 +21,7 @@ export class TerrainManager {
     this.chunkSegments = options.chunkSegments || 28;
     this.renderDistance = options.renderDistance || 4; // 256m view radius
     this.maxBuildsPerFrame = options.maxBuildsPerFrame || 1;
+    this.treeShadowRange = options.treeShadowRange || 55; // Proximity range in meters for real-time tree shadows
 
     this.seed = options.seed !== undefined ? options.seed : 1337;
     this.heightmap = new TerrainHeightmap(this.seed);
@@ -53,7 +54,7 @@ export class TerrainManager {
       for (const chunk of this.loadedChunks.values()) {
         if (!chunk.treeMesh3D && !chunk.treeMeshImpostor) {
           const dist = this._getChunkBoundaryDistance(chunk, px, pz);
-          chunk.buildTrees(this.scene, dist <= 95, dist, this.cameraFrustum);
+          chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, this.cameraFrustum);
         }
       }
       this._updateTreeLODs(px, pz, this.cameraFrustum);
@@ -197,16 +198,16 @@ export class TerrainManager {
   /**
    * Distance-gates tree LODs, frustum-culls trees not in view, and manages shadow casting:
    * - Frustum Culled: Trees not intersecting camera frustum or shadow caster bounds are set to visible = false
-   * - Near (<= 65m nearest chunk edge): Full 3D instanced conifer models
-   * - Distant (> 65m nearest chunk edge): 4-poly cross-quad billboard impostors with baked scene lighting
-   * - Shadow Culling (> 95m): Far chunks skip shadow pass completely
+   * - Near (<= 55m nearest chunk edge): Full 3D instanced conifer models (casts shadows)
+   * - Distant (> 65m nearest chunk edge): 4-poly cross-quad billboard impostors with baked scene lighting (no shadows)
+   * - Proximity Shadow Culling (> treeShadowRange): Chunks skip shadow pass completely
    * @private
    */
   _updateTreeLODs(px, pz, cameraFrustum = null) {
     const frustum = cameraFrustum || this.cameraFrustum;
     for (const chunk of this.loadedChunks.values()) {
       const dist = this._getChunkBoundaryDistance(chunk, px, pz);
-      chunk.updateTreeLOD(dist, frustum);
+      chunk.updateTreeLOD(dist, frustum, this.treeShadowRange);
     }
   }
 
@@ -271,16 +272,17 @@ export class TerrainManager {
                 this.heightmap,
                 this.materialFactory,
                 this.treeGenerator,
-                true
+                true,
+                this.treeShadowRange
               );
               this.scene.add(chunk.mesh);
               const playerX = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
               const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
               const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
               if (this.treeGenerator.isLoaded) {
-                chunk.buildTrees(this.scene, dist <= 75, dist, this.cameraFrustum);
+                chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, this.cameraFrustum);
               } else {
-                chunk.updateTreeLOD(dist, this.cameraFrustum);
+                chunk.updateTreeLOD(dist, this.cameraFrustum, this.treeShadowRange);
               }
               this.loadedChunks.set(key, chunk);
             } else {
@@ -341,7 +343,8 @@ export class TerrainManager {
             this.heightmap,
             this.materialFactory,
             this.treeGenerator,
-            isNear
+            isNear,
+            this.treeShadowRange
           );
 
           this.scene.add(chunk.mesh);
@@ -349,9 +352,9 @@ export class TerrainManager {
           const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
           const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
           if (this.treeGenerator.isLoaded) {
-            chunk.buildTrees(this.scene, dist <= 75, dist, this.cameraFrustum);
+            chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, this.cameraFrustum);
           } else {
-            chunk.updateTreeLOD(dist, this.cameraFrustum);
+            chunk.updateTreeLOD(dist, this.cameraFrustum, this.treeShadowRange);
           }
           this.loadedChunks.set(key, chunk);
           buildsThisFrame++;
@@ -364,6 +367,20 @@ export class TerrainManager {
    * Diagnostic telemetry for active vs culled tree chunks.
    * Useful for performance profiling and validation.
    */
+  getTreeShadowRange() {
+    return this.treeShadowRange;
+  }
+
+  setTreeShadowRange(range) {
+    this.treeShadowRange = Math.max(0, range);
+    for (const chunk of this.loadedChunks.values()) {
+      chunk.treeShadowRange = this.treeShadowRange;
+    }
+    const px = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
+    const pz = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
+    this._updateTreeLODs(px, pz, this.cameraFrustum);
+  }
+
   getTreeTelemetry() {
     let total = 0;
     let visible3D = 0;
@@ -380,8 +397,7 @@ export class TerrainManager {
       else culled++;
 
       const casts3D = chunk.treeMesh3D && (chunk.treeMesh3D.castShadow || (chunk.treeMesh3D.children && chunk.treeMesh3D.children.some((c) => c.castShadow)));
-      const castsImp = chunk.treeMeshImpostor && (chunk.treeMeshImpostor.castShadow || (chunk.treeMeshImpostor.children && chunk.treeMeshImpostor.children.some((c) => c.castShadow)));
-      if (casts3D || castsImp) {
+      if (casts3D) {
         shadowCasting++;
       }
     }
@@ -392,6 +408,7 @@ export class TerrainManager {
       visibleImp,
       culled,
       shadowCasting,
+      treeShadowRange: this.treeShadowRange,
       cullPercentage: total > 0 ? Math.round((culled / total) * 100) : 0,
     };
   }

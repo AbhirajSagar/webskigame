@@ -14,8 +14,10 @@ export class TerrainChunk {
    * @param {TerrainHeightmap} heightmap
    * @param {TerrainMaterialFactory} materialFactory
    * @param {TreeGenerator|null} treeGenerator
+   * @param {boolean} [isNear=true]
+   * @param {number} [treeShadowRange=55]
    */
-  constructor(chunkX, chunkZ, size, segments, heightmap, materialFactory, treeGenerator = null, isNear = true) {
+  constructor(chunkX, chunkZ, size, segments, heightmap, materialFactory, treeGenerator = null, isNear = true, treeShadowRange = 55) {
     this.chunkX = chunkX;
     this.chunkZ = chunkZ;
     this.size = size;
@@ -24,11 +26,12 @@ export class TerrainChunk {
     this.materialFactory = materialFactory;
     this.treeGenerator = treeGenerator;
     this.isNear = isNear;
+    this.treeShadowRange = treeShadowRange;
 
     this.mesh = null;
     this.treeMesh3D = null;
     this.treeMeshImpostor = null;
-    this.activeTreeLOD = null; // 0 = 3D (<= 48m), 1 = 4-poly cross-quad impostor (> 48m)
+    this.activeTreeLOD = null; // 0 = 3D (<= 55m), 1 = 4-poly cross-quad impostor (> 65m)
     this.treeColliders = null;
     this.isDisposed = false;
 
@@ -218,104 +221,85 @@ export class TerrainChunk {
         if (this.treeMeshImpostor) scene.add(this.treeMeshImpostor);
       }
 
-      this.updateTreeLOD(initialDist, cameraFrustum);
+      this.updateTreeLOD(initialDist, cameraFrustum, this.treeShadowRange);
     }
   }
 
   /**
-   * Updates chunk visibility, tree LOD, and shadow casting dynamically based on:
-   * 1. View Frustum Culling: If neither trees nor their cast shadows intersect the camera view frustum,
-   *    the chunk's trees (both 3D and impostors) and terrain mesh are completely hidden (visible = false).
-   *    Three.js immediately skips traversing and drawing them in both main and shadow passes.
-   * 2. Shadow-Caster Offset: Trees outside the view frustum that cast shadows into the camera view are
-   *    rendered via ultra-lightweight 4-poly impostor depth passes to preserve shadow continuity at minimal cost.
-   * 3. Distance-Gated LOD:
-   *    - dist <= 65m: LOD 0 (high-poly 3D models with detailed branch shadow casting)
-   *    - dist > 80m: LOD 1 (4-triangle cross-quad billboard impostors with baked scene lighting)
-   *    - 65m to 80m: hysteresis deadband prevents boundary thrashing
-   * 4. Shadow Distance:
-   *    - dist <= 95m: casts shadows
-   *    - dist > 95m: shadow casting culled
-   * @param {number} dist
+   * Updates chunk visibility, tree LOD, and shadow casting dynamically:
+   * 1. View Frustum Culling:
+   *    - Terrain mesh is visible if its bounding box intersects camera view frustum.
+   * 2. Proximity-Gated Shadow Casting:
+   *    - Only trees around the player within shadowRange (default 55m) cast shadows.
+   *    - Distant trees and impostors do not cast shadows, optimizing GPU fillrate and draw calls.
+   * 3. Two-Tier Tree LOD:
+   *    - dist <= 55m: LOD 0 (detailed 3D conifer models). Casts shadows when within shadowRange.
+   *    - dist > 65m: LOD 1 (ultra-lightweight billboard impostors). Never casts shadows.
+   *    - 55m to 65m: hysteresis deadband prevents boundary thrashing.
+   * @param {number} dist - Distance from player to nearest chunk boundary
    * @param {THREE.Frustum|null} [cameraFrustum=null]
+   * @param {number} [shadowRange=55] - Maximum distance within which trees cast shadows
    */
-  updateTreeLOD(dist, cameraFrustum = null) {
+  updateTreeLOD(dist, cameraFrustum = null, shadowRange = this.treeShadowRange || 55) {
     if (this.isDisposed) return;
 
-    // --- 1. Frustum Culling ---
-    let inCameraView = true;
-    let inShadowView = true;
-
-    if (cameraFrustum) {
-      inCameraView = this.treeBounds ? cameraFrustum.intersectsBox(this.treeBounds) : true;
-      inShadowView = inCameraView || (this.shadowCasterBounds ? cameraFrustum.intersectsBox(this.shadowCasterBounds) : false);
-
-      // Terrain mesh frustum culling: terrain only receives shadows and does not cast them,
-      // so it only needs to be rendered if directly in camera view
-      if (this.mesh) {
-        const terrainInView = this.terrainBounds ? cameraFrustum.intersectsBox(this.terrainBounds) : inCameraView;
-        if (this.mesh.visible !== terrainInView) {
-          this.mesh.visible = terrainInView;
-        }
-      }
-
-      // If entirely outside both camera view and shadow caster volume, cull all trees completely
-      if (!inShadowView) {
-        if (this.treeMesh3D && this.treeMesh3D.visible) this.treeMesh3D.visible = false;
-        if (this.treeMeshImpostor && this.treeMeshImpostor.visible) this.treeMeshImpostor.visible = false;
-        this._setCastShadowOnObj(this.treeMesh3D, false);
-        this._setCastShadowOnObj(this.treeMeshImpostor, false);
-        return;
-      }
-    } else {
-      if (this.mesh && !this.mesh.visible) {
-        this.mesh.visible = true;
+    // --- 1. Terrain Mesh Visibility (Frustum Culling) ---
+    if (this.mesh) {
+      const terrainInView = cameraFrustum ? (this.terrainBounds ? cameraFrustum.intersectsBox(this.terrainBounds) : true) : true;
+      if (this.mesh.visible !== terrainInView) {
+        this.mesh.visible = terrainInView;
       }
     }
 
     if (!this.treeMesh3D && !this.treeMeshImpostor) return;
 
-    // --- 2. Tree LOD & Shadow Assignment ---
-    // If chunk is only in shadow view (just off-screen, casting shadows into view),
-    // use lightweight impostors for the shadow pass to eliminate high-poly vertex overhead
-    if (!inCameraView && inShadowView) {
-      if (this.treeMesh3D && this.treeMesh3D.visible) this.treeMesh3D.visible = false;
-      const canCast = dist <= 75;
-      if (this.treeMeshImpostor) {
-        if (this.treeMeshImpostor.visible !== canCast) this.treeMeshImpostor.visible = canCast;
-        this._setCastShadowOnObj(this.treeMeshImpostor, canCast);
-      }
-      this._setCastShadowOnObj(this.treeMesh3D, false);
-      return;
-    }
+    // --- 2. Camera View & Shadow Range Determination ---
+    const inCameraView = cameraFrustum ? (this.treeBounds ? cameraFrustum.intersectsBox(this.treeBounds) : true) : true;
+    const isWithinShadowRange = (dist <= shadowRange);
 
-    // Normal in-view LOD selection (streamlined distances for high FPS)
+    // --- 3. LOD Selection with Hysteresis ---
     let targetLOD = this.activeTreeLOD;
     if (this.activeTreeLOD === null) {
-      targetLOD = dist <= 48 ? 0 : 1;
-    } else if (this.activeTreeLOD === 0 && dist > 60) {
+      targetLOD = dist <= 55 ? 0 : 1;
+    } else if (this.activeTreeLOD === 0 && dist > 65) {
       targetLOD = 1;
-    } else if (this.activeTreeLOD === 1 && dist <= 48) {
+    } else if (this.activeTreeLOD === 1 && dist <= 52) {
       targetLOD = 0;
     }
 
-    if (this.activeTreeLOD !== targetLOD) {
-      this.activeTreeLOD = targetLOD;
-    }
+    this.activeTreeLOD = targetLOD;
 
-    const want3DVisible = (targetLOD === 0);
-    const wantImpVisible = (targetLOD === 1);
+    // --- 4. Visibility & Shadow Management ---
+    if (targetLOD === 0) {
+      // Near LOD: High-detail 3D Tree Models
+      // If within shadow range, treeMesh3D must remain visible in scene graph so Three.js renders its
+      // shadow into the directional light shadow map (even if the tree is behind the skier camera,
+      // its shadow will fall forward into view). Three.js's native frustum culling will handle camera culling.
+      const want3DVisible = isWithinShadowRange || inCameraView;
+      if (this.treeMesh3D && this.treeMesh3D.visible !== want3DVisible) {
+        this.treeMesh3D.visible = want3DVisible;
+      }
+      this._setCastShadowOnObj(this.treeMesh3D, isWithinShadowRange);
 
-    if (this.treeMesh3D && this.treeMesh3D.visible !== want3DVisible) {
-      this.treeMesh3D.visible = want3DVisible;
-    }
-    if (this.treeMeshImpostor && this.treeMeshImpostor.visible !== wantImpVisible) {
-      this.treeMeshImpostor.visible = wantImpVisible;
-    }
+      // Hide impostors in near LOD
+      if (this.treeMeshImpostor && this.treeMeshImpostor.visible) {
+        this.treeMeshImpostor.visible = false;
+      }
+      this._setCastShadowOnObj(this.treeMeshImpostor, false);
+    } else {
+      // Distant LOD: Lightweight Billboard Impostors
+      if (this.treeMesh3D && this.treeMesh3D.visible) {
+        this.treeMesh3D.visible = false;
+      }
+      this._setCastShadowOnObj(this.treeMesh3D, false);
 
-    const canCast = dist <= 75;
-    this._setCastShadowOnObj(this.treeMesh3D, want3DVisible && canCast);
-    this._setCastShadowOnObj(this.treeMeshImpostor, wantImpVisible && canCast);
+      // Impostors are only rendered if directly in camera view
+      if (this.treeMeshImpostor && this.treeMeshImpostor.visible !== inCameraView) {
+        this.treeMeshImpostor.visible = inCameraView;
+      }
+      // Impostors NEVER cast shadows (saves GPU fillrate and prevents billboard shadow artifacts)
+      this._setCastShadowOnObj(this.treeMeshImpostor, false);
+    }
   }
 
   /**
@@ -344,7 +328,7 @@ export class TerrainChunk {
    */
   setCastShadow(enabled) {
     this._setCastShadowOnObj(this.treeMesh3D, enabled && this.activeTreeLOD === 0);
-    this._setCastShadowOnObj(this.treeMeshImpostor, enabled && this.activeTreeLOD === 1);
+    this._setCastShadowOnObj(this.treeMeshImpostor, false);
   }
 
   /**

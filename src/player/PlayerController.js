@@ -157,6 +157,14 @@ export class PlayerController {
     this.position.set(0, startHeight, 0);
     this.focusY = this.position.y + this.focusHeight;
 
+    // Automatically align initial heading downhill along the starting slope
+    if (this.terrainManager?.heightmap?.getNormal) {
+      const startNorm = this.terrainManager.heightmap.getNormal(0, 0);
+      if (Math.hypot(startNorm.x, startNorm.z) > 0.05) {
+        this.yaw = Math.atan2(startNorm.x, startNorm.z);
+      }
+    }
+
     // Position camera initially
     this._updateCamera(0.016, true);
   }

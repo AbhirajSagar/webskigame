@@ -696,17 +696,27 @@ export class TreeGenerator {
         const norm = this.heightmap.getNormal(wx, wz);
         if (norm.y < 0.72) continue; // max ~44 deg slope
 
-        // 4. Biome noise density: negative values carve out open ski slopes (pistes)
-        const density = this.treeNoise.fbm(wx * 0.006, wz * 0.006, 2);
-        if (density < -0.02) continue; // Ski run clearing
+        // 4. Biome-aware density & Ski Piste clearings
+        const biome = this.heightmap.getBiomeData ? this.heightmap.getBiomeData(wx, wz) : null;
+        const wCirque = biome ? biome.wCirque : 0.0;
+        const wPark = biome ? biome.wPark : 0.0;
 
-        const prob = Math.min(1.0, (density + 0.02) * 1.6);
+        // Cirque peaks are rugged and windswept with 65% sparser trees
+        const biomeDensityFactor = 1.0 - wCirque * 0.65;
+
+        const density = this.treeNoise.fbm(wx * 0.006, wz * 0.006, 2);
+        // Ski run clearing (piste corridors)
+        if (density < -0.02) continue;
+
+        const prob = Math.min(1.0, (density + 0.02) * 1.6) * biomeDensityFactor;
         if (spawnHash >= prob * 0.65) continue;
 
         // 5. Timberline & Snag selection
+        // High Cirque zones have lower timberline (85m) and higher dead snag probability
+        const timberline = 120.0 - wCirque * 35.0;
         const snagHash = this._hash(chunkX, chunkZ, gx * 17, gz * 19);
         const isSnag = this.activeSnags.length > 0 &&
-                       ((wy > 120.0 && snagHash < 0.35) || (snagHash * 7 < 0.55));
+                       ((wy > timberline && snagHash < (0.35 + wCirque * 0.30)) || (snagHash * 7 < (0.55 + wCirque * 0.40)));
 
         let modelData;
         if (isSnag) {
@@ -823,8 +833,8 @@ export class TreeGenerator {
         instMeshImp.instanceMatrix.needsUpdate = true;
         instMeshImp.computeBoundingSphere();
         instMeshImp.computeBoundingBox();
-        instMeshImp.castShadow = true;
-        instMeshImp.receiveShadow = true;
+        instMeshImp.castShadow = false;
+        instMeshImp.receiveShadow = false;
         createdMeshesImp.push(instMeshImp);
       }
     }
