@@ -199,6 +199,38 @@ export class TerrainChunk {
   }
 
   /**
+   * Rebuilds the chunk's terrain mesh and bounding boxes in-place.
+   * Useful when terrain parameters or heightmap configuration change dynamically.
+   */
+  rebuildMesh() {
+    if (this.isDisposed || !this.mesh) return;
+    const oldGeom = this.mesh.geometry;
+    const { geometry, minY, maxY } = this._buildGeometry();
+    this.mesh.geometry = geometry;
+    if (oldGeom) oldGeom.dispose();
+
+    const half = this.size * 0.5;
+    if (this.terrainBounds) {
+      this.terrainBounds.set(
+        new THREE.Vector3(this.worldCenterX - half, minY - 1, this.worldCenterZ - half),
+        new THREE.Vector3(this.worldCenterX + half, maxY + 1, this.worldCenterZ + half)
+      );
+    }
+    if (this.treeBounds) {
+      this.treeBounds.set(
+        new THREE.Vector3(this.worldCenterX - half - 6, minY - 1, this.worldCenterZ - half - 6),
+        new THREE.Vector3(this.worldCenterX + half + 6, maxY + 28, this.worldCenterZ + half + 6)
+      );
+    }
+    if (this.shadowCasterBounds) {
+      this.shadowCasterBounds.set(
+        new THREE.Vector3(this.worldCenterX - half - 10, minY - 1, this.worldCenterZ - half - 10),
+        new THREE.Vector3(this.worldCenterX + half + 26, maxY + 28, this.worldCenterZ + half + 26)
+      );
+    }
+  }
+
+  /**
    * Generates and adds tree instances (both 3D and 2D cross-quad impostors) for this chunk.
    * @param {THREE.Scene} scene
    * @param {boolean} [canCastShadow=true]

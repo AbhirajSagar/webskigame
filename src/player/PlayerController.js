@@ -161,7 +161,7 @@ export class PlayerController {
     if (this.terrainManager?.heightmap?.getNormal) {
       const startNorm = this.terrainManager.heightmap.getNormal(0, 0);
       if (Math.hypot(startNorm.x, startNorm.z) > 0.05) {
-        this.yaw = Math.atan2(startNorm.x, startNorm.z);
+        this.yaw = Math.atan2(-startNorm.x, -startNorm.z);
       }
     }
 
@@ -887,6 +887,9 @@ export class PlayerController {
 
         for (let i = 0; i < nearbyTrunks.length; i++) {
           const t = nearbyTrunks[i];
+          // Dry / dead trees (snags) have no foliage/leaves to shed
+          if (t.isDead || t.isDry || t.foliageType === 'none' || t.category === 'snag') continue;
+
           const branchBottom = t.y - 0.6;
           const branchTop = t.y + t.height + 0.5;
           if (playerFeetY > branchTop || playerHeadY < branchBottom) continue;
@@ -1034,8 +1037,8 @@ export class PlayerController {
             this.velocity.x = tx * remainingSpeed + nx * 0.8;
             this.velocity.z = tz * remainingSpeed + nz * 0.8;
 
-            // Spawn explosive burst of torn leaves from trunk impact
-            if (this.leafParticles) {
+            // Spawn explosive burst of torn leaves from trunk impact (live foliage trees only)
+            if (this.leafParticles && !t.isDead && !t.isDry && t.foliageType !== 'none' && t.category !== 'snag') {
               this.leafParticles.spawnImpact(
                 this.position,
                 this.velocity,

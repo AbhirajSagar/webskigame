@@ -8,13 +8,13 @@ import { TreeImpostorBaker } from './TreeImpostorBaker.js';
 
 /**
  * Deterministically maps a world position (x, z) and terrain seed to a tree foliage type.
- * Eliminates the need to store foliage types in memory on tree colliders while ensuring
- * that the visual model placed at (x, z) and leaf particles spawned at (x, z) always match.
+ * All foliage types use the single BranchMat_diffuse_green.png texture and are recolored
+ * via TreeLeafShader on the GPU based on the seed.
  *
  * @param {number} x - World X position
  * @param {number} z - World Z position
  * @param {number} [seed=1337] - World generation seed
- * @returns {'green'|'orange'|'snow'}
+ * @returns {'green'|'orange'|'snow'|'gold'|'crimson'|'spruce'}
  */
 export function getTreeFoliageType(x, z, seed = 1337) {
   const ix = Math.round(x * 100) | 0;
@@ -25,9 +25,15 @@ export function getTreeFoliageType(x, z, seed = 1337) {
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   const val = ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 
-  if (val < 0.45) return 'green';
-  if (val < 0.75) return 'orange';
-  return 'snow';
+  // Authentic snowy alpine foliage distribution:
+  // 42% Subalpine Pine Green, 24% Rocky Mountain Blue Spruce, 14% Silver Frost Fir,
+  // 10% Winter Russet Bronze Pine, 7% Alpine Golden Larch, 3% Winter Mahogany
+  if (val < 0.42) return 'green';
+  if (val < 0.66) return 'spruce';
+  if (val < 0.80) return 'snow';
+  if (val < 0.90) return 'orange';
+  if (val < 0.97) return 'gold';
+  return 'crimson';
 }
 
 /**
@@ -98,16 +104,6 @@ export const DEFAULT_TREE_CONFIGS = {
     minRotZ: -32,
     maxRotZ: 38,
   },
-  dead_2: {
-    minScale: 0.75,
-    maxScale: 3,
-    minRotX: -44,
-    maxRotX: 40,
-    minRotY: 0,
-    maxRotY: 360,
-    minRotZ: -40,
-    maxRotZ: 39,
-  },
 };
 
 /**
@@ -123,15 +119,18 @@ export class TreeGenerator {
   static _modelCache = new Map();
   static _textureCache = null;
   static _materialCache = null;
+  static _materialCacheSeed = null;
 
   /**
    * Retrieves or instantiates shared materials across all tree models and chunks.
    * Eliminates GPU shader switches, texture re-bindings, and uniform state changes.
+   * @param {number} [seed=1337]
    */
-  static getSharedMaterials() {
-    if (this._materialCache) return this._materialCache;
+  static getSharedMaterials(seed = 1337) {
+    if (this._materialCache && this._materialCacheSeed === seed) return this._materialCache;
     const textures = TreeGenerator._textureCache || TreeTextureFactory.getTextures() || {};
-    this._materialCache = TreeTextureFactory.createMaterials(textures);
+    this._materialCache = TreeTextureFactory.createMaterials(textures, seed);
+    this._materialCacheSeed = seed;
     return this._materialCache;
   }
 
@@ -156,6 +155,9 @@ export class TreeGenerator {
       green: [],
       orange: [],
       snow: [],
+      gold: [],
+      crimson: [],
+      spruce: [],
     };
     this.loadedModels = [];
     this.isLoaded = false;
@@ -302,6 +304,9 @@ export class TreeGenerator {
         green: [],
         orange: [],
         snow: [],
+        gold: [],
+        crimson: [],
+        spruce: [],
       };
 
       for (const m of loadedList) {
@@ -430,6 +435,9 @@ export class TreeGenerator {
     if (topLevelGroups.length > 1) {
       const variants = [];
       for (const group of topLevelGroups) {
+        // Exclude the bigger dried tree (dead_2) completely from the project
+        if ((group.name || '').toLowerCase().includes('dead_2')) continue;
+
         const v = this._processVariant(group, path, filename, group.name);
         if (v) {
           if (Array.isArray(v)) variants.push(...v);
@@ -452,6 +460,9 @@ export class TreeGenerator {
    * @private
    */
   _processVariant(node, path, filename, variantName = '') {
+    // Exclude the bigger dried tree (dead_2) completely from the project
+    if ((variantName || filename || '').toLowerCase().includes('dead_2')) return null;
+
     const meshes = [];
     node.traverse((c) => {
       if (c.isMesh) meshes.push(c);
@@ -582,7 +593,7 @@ export class TreeGenerator {
     }
     const branchRadius = maxBranchDistSq > 0 ? Math.sqrt(maxBranchDistSq) : 4.5;
 
-    const sharedMats = TreeGenerator.getSharedMaterials();
+    const sharedMats = TreeGenerator.getSharedMaterials(this.seed);
 
     // If dead snag or no branch sub-meshes present, return single snag model
     if (isDeadTree || !isBranchFlags.some(Boolean)) {
@@ -600,12 +611,15 @@ export class TreeGenerator {
       }];
     }
 
-    // Live pine tree: generate 3 foliage variations (snow, green, orange)
-    // All 3 variations share the exact same finalGeom to eliminate memory overhead
+    // Live pine tree: generate shader-driven foliage variations using BranchMat_diffuse_green
+    // All variations share the exact same geometry to eliminate GPU memory overhead
     const foliageConfigs = [
-      { id: 'snow', suffix: '_snow', needleMat: sharedMats.needlesSnow },
       { id: 'green', suffix: '_green', needleMat: sharedMats.needlesGreen },
       { id: 'orange', suffix: '_orange', needleMat: sharedMats.needlesOrange },
+      { id: 'snow', suffix: '_snow', needleMat: sharedMats.needlesSnow },
+      { id: 'gold', suffix: '_gold', needleMat: sharedMats.needlesGold },
+      { id: 'crimson', suffix: '_crimson', needleMat: sharedMats.needlesCrimson },
+      { id: 'spruce', suffix: '_spruce', needleMat: sharedMats.needlesSpruce },
     ];
 
     return foliageConfigs.map((cfg) => {
@@ -712,11 +726,12 @@ export class TreeGenerator {
         if (spawnHash >= prob * 0.65) continue;
 
         // 5. Timberline & Snag selection
-        // High Cirque zones have lower timberline (85m) and higher dead snag probability
+        // Dried trees (snags) are natural alpine accents: balanced at ~8% in valleys and ski slopes,
+        // increasing to ~15%-20% near harsh timberline ridges and rocky cirques (~10% overall)
         const timberline = 120.0 - wCirque * 35.0;
         const snagHash = this._hash(chunkX, chunkZ, gx * 17, gz * 19);
-        const isSnag = this.activeSnags.length > 0 &&
-                       ((wy > timberline && snagHash < (0.35 + wCirque * 0.30)) || (snagHash * 7 < (0.55 + wCirque * 0.40)));
+        const snagProbability = wy > timberline ? (0.14 + wCirque * 0.08) : 0.08;
+        const isSnag = this.activeSnags.length > 0 && snagHash < snagProbability;
 
         let modelData;
         if (isSnag) {
@@ -809,16 +824,20 @@ export class TreeGenerator {
         }
 
         // Record trunk-only collider for physics (branches and foliage are non-collidable)
-        // and physical branchRadius for foliage brush particle effects
-        // Note: Foliage type is deterministically computed from (x, z, seed) at runtime,
-        // eliminating the memory overhead of storing tree types per collider.
+        // and physical branchRadius for foliage brush particle effects.
+        // Identifies dry / dead trees (snags) so they do not shed foliage leaves.
+        const isDeadTree = Boolean(modelData.isDead);
         treeColliders.push({
           x: inst.x,
           y: inst.y,
           z: inst.z,
           radius: (modelData.trunkRadius || 0.22) * scale,
           height: (modelData.modelHeight || 8.0) * scale,
-          branchRadius: (modelData.branchRadius || 4.5) * scale,
+          branchRadius: isDeadTree ? 0 : ((modelData.branchRadius || 4.5) * scale),
+          isDead: isDeadTree,
+          isDry: isDeadTree,
+          category: modelData.category || (isDeadTree ? 'snag' : 'pine'),
+          foliageType: isDeadTree ? 'none' : (modelData.foliageType || null),
         });
       }
 
@@ -930,13 +949,18 @@ export class TreeGenerator {
             instMesh.setMatrixAt(i, dummy.matrix);
 
             if (isPrimary3D && chunk.treeColliders) {
+              const isDeadTree = Boolean(modelData?.isDead);
               chunk.treeColliders.push({
                 x: inst.x,
                 y: inst.y,
                 z: inst.z,
                 radius: baseRad * scale,
                 height: baseHeight * scale,
-                foliageType: modelData?.foliageType || 'green',
+                branchRadius: isDeadTree ? 0 : ((modelData?.branchRadius || 4.5) * scale),
+                isDead: isDeadTree,
+                isDry: isDeadTree,
+                category: modelData?.category || (isDeadTree ? 'snag' : 'pine'),
+                foliageType: isDeadTree ? 'none' : (modelData?.foliageType || 'green'),
               });
             }
           }

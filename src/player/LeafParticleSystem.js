@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { getTreeFoliageType } from '../terrain/TreeGenerator.js';
+import { applyTreeLeafShader, LEAF_COLOR_PRESETS } from '../terrain/TreeLeafShader.js';
 
-export { getTreeFoliageType };
+export { getTreeFoliageType, applyTreeLeafShader, LEAF_COLOR_PRESETS };
 
 const MAX_PARTICLES_PER_TYPE = 220;
 
@@ -20,9 +21,10 @@ class FoliageTypePool {
    * @param {THREE.Scene} scene
    * @param {string} textureUrl
    * @param {THREE.BufferGeometry} geometry
-   * @param {number} maxCount
+   * @param {number} [maxCount]
+   * @param {Object} [hslOptions=null] - Optional HSL shader options { hue, saturation, lightness }
    */
-  constructor(scene, textureUrl, geometry, maxCount = MAX_PARTICLES_PER_TYPE) {
+  constructor(scene, textureUrl, geometry, maxCount = MAX_PARTICLES_PER_TYPE, hslOptions = null) {
     this.scene = scene;
     this.geometry = geometry;
     this.maxCount = maxCount;
@@ -43,6 +45,10 @@ class FoliageTypePool {
       side: THREE.DoubleSide,
       fog: true,
     });
+
+    if (hslOptions) {
+      applyTreeLeafShader(this.material, hslOptions);
+    }
 
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, this.maxCount);
     // Explicitly configure Layer 0 for the secondary camera (worldCamera / environment)
@@ -458,11 +464,16 @@ export class LeafParticleSystem {
     this.seed = seed;
     this.geometry = new THREE.PlaneGeometry(0.52, 0.52);
 
-    // Dedicated pools for each tree texture variant
+    // Dedicated pools for each tree texture variant, all using BranchMat_diffuse_green
+    // recolored dynamically with TreeLeafShader presets to match the trees based on the seed
+    const baseLeafTex = '/textures/BranchMat_diffuse_green.png';
     this.pools = {
-      green: new FoliageTypePool(this.scene, '/textures/BranchMat_diffuse_green.png', this.geometry),
-      orange: new FoliageTypePool(this.scene, '/textures/BranchMat_diffuse_orange.png', this.geometry),
-      snow: new FoliageTypePool(this.scene, '/textures/BranchMat_diffuse_snow.png', this.geometry),
+      green: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.green),
+      orange: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.autumnOrange),
+      snow: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.frostSilver),
+      gold: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.goldenLarch),
+      crimson: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.crimsonMaple),
+      spruce: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.blueSpruce),
     };
 
     this._lastBrushTime = 0;
@@ -505,29 +516,57 @@ export class LeafParticleSystem {
   }
 
   /**
+   * Checks whether the given tree is a dry or dead tree (snag) that has no foliage.
+   * Dry/dead trees do not shed leaves upon branch brushing or trunk impact.
+   * @param {Object} [tree]
+   * @returns {boolean}
+   */
+  isDryTree(tree) {
+    if (!tree) return false;
+    if (tree.isDead || tree.isDry) return true;
+    if (tree.foliageType === 'none' || tree.foliageType === 'dead' || tree.foliageType === 'dry') return true;
+    if (tree.category === 'snag' || tree.category === 'dead') return true;
+    if (typeof tree.name === 'string') {
+      const n = tree.name.toLowerCase();
+      if (n.includes('dead') || n.includes('snag') || n.includes('dry') || n.includes('stump')) return true;
+    }
+    if (typeof tree.modelName === 'string') {
+      const mn = tree.modelName.toLowerCase();
+      if (mn.includes('dead') || mn.includes('snag') || mn.includes('dry') || mn.includes('stump')) return true;
+    }
+    return false;
+  }
+
+  /**
    * Resolves the appropriate pool key based on the tree's position and seed.
+   * Returns null if the tree is a dry/dead tree without foliage.
    * Deterministically computes the foliage type from (tree.x, tree.z, seed),
    * eliminating the need to store foliage types per tree collider.
+   * @param {Object} [tree]
+   * @returns {FoliageTypePool|null}
    * @private
    */
   _resolvePool(tree) {
     if (!tree) return this.pools.green;
+    if (this.isDryTree(tree)) return null;
+
+    if (tree.foliageType && this.pools[tree.foliageType]) {
+      return this.pools[tree.foliageType];
+    }
+
     const type = (tree.x !== undefined && tree.z !== undefined)
       ? getTreeFoliageType(tree.x, tree.z, this.seed)
       : (tree.foliageType || 'green');
-    if (type === 'orange') return this.pools.orange;
-    if (type === 'snow') return this.pools.snow;
-    return this.pools.green;
+    return this.pools[type] || this.pools.green;
   }
 
   /**
    * Spawns leaves from the matching tree texture pool when touching or grazing tree branches.
-   */
-  /**
-   * Spawns leaves from the matching tree texture pool when colliding with at least 30%-35% of the tree canopy area.
-   * Light nudges or touches on the outer boundary (< 30%-35% area) are ignored.
+   * Silently ignores dry/dead trees with no foliage.
    */
   spawnBrush(playerPos, playerVel, cameraPos, forwardDir, rightDir, tree, dist, canopyRadius) {
+    if (this.isDryTree(tree)) return;
+
     const speed = playerVel.length();
     if (speed < 1.5) return;
 
@@ -557,24 +596,42 @@ export class LeafParticleSystem {
     }
 
     const pool = this._resolvePool(tree);
+    if (!pool) return;
     pool.spawnBrush(playerPos, playerVel, cameraPos, forwardDir, rightDir, tree, dist, canopyRadius);
   }
 
   /**
    * Spawns leaves from the matching tree texture pool upon violent trunk impact.
+   * Silently ignores dry/dead trees with no foliage.
    */
   spawnImpact(playerPos, playerVel, cameraPos, forwardDir, rightDir, tree, count = 10) {
+    if (this.isDryTree(tree)) return;
+
     const pool = this._resolvePool(tree);
+    if (!pool) return;
     pool.spawnImpact(playerPos, playerVel, cameraPos, forwardDir, rightDir, tree, count);
+  }
+
+  /**
+   * Registers a new custom foliage particle pool with optional HSL color adjustments.
+   * @param {string} key - Unique pool identifier
+   * @param {string} [textureUrl] - Path to leaf texture (defaults to green needle texture)
+   * @param {Object} [hslOptions=null] - { hue, saturation, lightness }
+   */
+  addFoliagePool(key, textureUrl = '/textures/BranchMat_diffuse_green.png', hslOptions = null) {
+    if (!this.pools[key]) {
+      this.pools[key] = new FoliageTypePool(this.scene, textureUrl, this.geometry, MAX_PARTICLES_PER_TYPE, hslOptions);
+    }
+    return this.pools[key];
   }
 
   /**
    * Updates all active particle pools.
    */
   update(dt, playerPos, playerVel, cameraPos, forwardDir, rightDir) {
-    this.pools.green.update(dt, playerPos, playerVel, cameraPos, forwardDir, rightDir);
-    this.pools.orange.update(dt, playerPos, playerVel, cameraPos, forwardDir, rightDir);
-    this.pools.snow.update(dt, playerPos, playerVel, cameraPos, forwardDir, rightDir);
+    for (const pool of Object.values(this.pools)) {
+      pool.update(dt, playerPos, playerVel, cameraPos, forwardDir, rightDir);
+    }
   }
 
   /**
@@ -583,9 +640,9 @@ export class LeafParticleSystem {
    */
   dispose(scene) {
     if (this.pools) {
-      this.pools.green.dispose(scene);
-      this.pools.orange.dispose(scene);
-      this.pools.snow.dispose(scene);
+      for (const pool of Object.values(this.pools)) {
+        pool.dispose(scene);
+      }
     }
     if (this.geometry) {
       this.geometry.dispose();

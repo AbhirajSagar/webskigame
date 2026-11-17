@@ -1,12 +1,26 @@
 import * as THREE from 'three';
+import {
+  createTreeLeafMaterial,
+  TreeLeafMaterial,
+  applyTreeLeafShader,
+  LEAF_COLOR_PRESETS,
+} from './TreeLeafShader.js';
+
+export {
+  createTreeLeafMaterial,
+  TreeLeafMaterial,
+  applyTreeLeafShader,
+  LEAF_COLOR_PRESETS,
+};
 
 /**
- * Texture asset paths for conifer trees
+ * Texture asset paths for conifer trees.
+ * BranchMat_diffuse_green.png is the single base leaf texture for all trees;
+ * all foliage variations (autumn amber, silver frost, golden larch, ruby crimson, blue spruce)
+ * are generated dynamically by TreeLeafShader based on the world seed.
  */
 export const TREE_TEXTURE_PATHS = {
-  branchSnow: '/textures/BranchMat_diffuse_snow.png',
   branchGreen: '/textures/BranchMat_diffuse_green.png',
-  branchOrange: '/textures/BranchMat_diffuse_orange.png',
   branchNormal: '/textures/BranchMat_normal.png',
   barkDiffuse: '/textures/BarkMat_diffuse.png',
   barkNormal: '/textures/BarkMat_normal.png',
@@ -16,10 +30,9 @@ export const TREE_TEXTURE_PATHS = {
  * TreeTextureFactory
  * Loads and manages high-resolution conifer tree textures:
  * - Green pine needles (BranchMat_diffuse_green.png)
- * - Snow-covered pine needles (BranchMat_diffuse_snow.png)
- * - Orange autumn conifer needles (BranchMat_diffuse_orange.png)
  * - Conifer bark diffuse & normal maps
  *
+ * All color variations are produced via TreeLeafShader in GPU HSL space.
  * Provides procedural generation fallbacks if texture image files are not available.
  */
 export class TreeTextureFactory {
@@ -54,36 +67,27 @@ export class TreeTextureFactory {
       barkDiff,
       barkNorm,
       branchDiffGreen,
-      branchDiffSnow,
-      branchDiffOrange,
       branchNorm,
     ] = await Promise.all([
       loadTex(TREE_TEXTURE_PATHS.barkDiffuse, true, 1, 1),
       loadTex(TREE_TEXTURE_PATHS.barkNormal, false, 1, 1),
       loadTex(TREE_TEXTURE_PATHS.branchGreen, true, 1, 1),
-      loadTex(TREE_TEXTURE_PATHS.branchSnow, true, 1, 1),
-      loadTex(TREE_TEXTURE_PATHS.branchOrange, true, 1, 1),
       loadTex(TREE_TEXTURE_PATHS.branchNormal, false, 1, 1),
     ]);
 
     const proc = this.getTextures() || {};
-
-    const snowTex = branchDiffSnow || proc.branchDiffuseSnow;
     const greenTex = branchDiffGreen || proc.branchDiffuseGreen;
-    const orangeTex = branchDiffOrange || proc.branchDiffuseOrange;
 
     this._cache = {
       barkDiffuse: barkDiff || proc.barkDiffuse,
       barkNormal: barkNorm || proc.barkNormal,
       branchNormal: branchNorm || proc.branchNormal,
       deadBarkDiffuse: proc.deadBarkDiffuse,
-      // The three branch diffuse texture variants
-      branchDiffuseSnow: snowTex,
+      // Single leaf texture serving as base for all shader-generated leaf color variations
       branchDiffuseGreen: greenTex,
-      branchDiffuseOrange: orangeTex,
-      // Array of all 3 variants for random selection
-      branchDiffuses: [snowTex, greenTex, orangeTex],
-      // Default fallback
+      branchDiffuseSnow: greenTex,
+      branchDiffuseOrange: greenTex,
+      branchDiffuses: [greenTex],
       branchDiffuse: greenTex,
     };
 
@@ -105,10 +109,7 @@ export class TreeTextureFactory {
     const barkNormal = this._createBarkNormal();
     const branchNormal = this._createBranchNormal();
     const deadBarkDiffuse = this._createDeadBarkDiffuse();
-
     const branchDiffuseGreen = this._createBranchDiffuseGreen();
-    const branchDiffuseSnow = this._createBranchDiffuseSnow();
-    const branchDiffuseOrange = this._createBranchDiffuseOrange();
 
     this._cache = {
       barkDiffuse,
@@ -116,9 +117,9 @@ export class TreeTextureFactory {
       branchNormal,
       deadBarkDiffuse,
       branchDiffuseGreen,
-      branchDiffuseSnow,
-      branchDiffuseOrange,
-      branchDiffuses: [branchDiffuseSnow, branchDiffuseGreen, branchDiffuseOrange],
+      branchDiffuseSnow: branchDiffuseGreen,
+      branchDiffuseOrange: branchDiffuseGreen,
+      branchDiffuses: [branchDiffuseGreen],
       branchDiffuse: branchDiffuseGreen,
     };
 
@@ -150,23 +151,23 @@ export class TreeTextureFactory {
 
   /**
    * Creates standard PBR materials for trees using the loaded textures.
-   * Produces separate needle materials for snow, green, and orange branches.
+   * Uses BranchMat_diffuse_green.png as the single base leaf texture and generates
+   * distinct foliage variants (green, autumn amber, silver frost, golden larch, ruby crimson, blue spruce)
+   * via TreeLeafShader based on the world seed.
    * @param {Object} [textures]
+   * @param {number} [seed=1337]
    * @returns {Object}
    */
-  static createMaterials(textures = null) {
+  static createMaterials(textures = null, seed = 1337) {
     const tex = textures || this.getTextures() || {};
-
-    const branchSnow = tex.branchDiffuseSnow || tex.branchDiffuse;
     const branchGreen = tex.branchDiffuseGreen || tex.branchDiffuse;
-    const branchOrange = tex.branchDiffuseOrange || tex.branchDiffuse;
     const normalMap = tex.branchNormal || null;
 
-    const makeNeedleMaterial = (name, map) => {
-      return new THREE.MeshStandardMaterial({
+    const makeNeedleMaterial = (name, hslOptions = {}) => {
+      return createTreeLeafMaterial({
         name,
         color: 0xffffff,
-        map: map || null,
+        map: branchGreen || null,
         normalMap,
         normalScale: new THREE.Vector2(0.8, 0.8),
         roughness: 1.0,
@@ -175,12 +176,36 @@ export class TreeTextureFactory {
         transparent: true,
         alphaTest: 0.40,
         depthWrite: true,
+        seed,
+        ...hslOptions,
       });
     };
 
-    const needlesSnow = makeNeedleMaterial('AlpinePineNeedles_Snow', branchSnow);
-    const needlesGreen = makeNeedleMaterial('AlpinePineNeedles_Green', branchGreen);
-    const needlesOrange = makeNeedleMaterial('AlpinePineNeedles_Orange', branchOrange);
+    // Shader-generated leaf color variations from the single BranchMat_diffuse_green texture:
+    const needlesGreen = makeNeedleMaterial('AlpinePineNeedles_Green', {
+      preset: 'green',
+      instanceVariation: [0.015, 0.05, 0.05], // subtle organic HSL variation per tree instance
+    });
+    const needlesOrange = makeNeedleMaterial('AlpinePineNeedles_Orange', {
+      preset: 'autumnOrange',
+      instanceVariation: [0.02, 0.06, 0.06],
+    });
+    const needlesSnow = makeNeedleMaterial('AlpinePineNeedles_Snow', {
+      preset: 'frostSilver',
+      instanceVariation: [0.015, 0.05, 0.06],
+    });
+    const needlesGold = makeNeedleMaterial('AlpinePineNeedles_Gold', {
+      preset: 'goldenLarch',
+      instanceVariation: [0.02, 0.06, 0.05],
+    });
+    const needlesCrimson = makeNeedleMaterial('AlpinePineNeedles_Crimson', {
+      preset: 'crimsonMaple',
+      instanceVariation: [0.02, 0.06, 0.05],
+    });
+    const needlesSpruce = makeNeedleMaterial('AlpinePineNeedles_Spruce', {
+      preset: 'blueSpruce',
+      instanceVariation: [0.015, 0.05, 0.05],
+    });
 
     const livingBark = new THREE.MeshStandardMaterial({
       name: 'AlpinePineTrunk',
@@ -202,18 +227,33 @@ export class TreeTextureFactory {
       metalness: 0.02,
     });
 
+    const allNeedleMaterials = [
+      needlesGreen,
+      needlesOrange,
+      needlesSnow,
+      needlesGold,
+      needlesCrimson,
+      needlesSpruce,
+    ];
+
     return {
       needles: needlesGreen,
       needlesGreen,
-      needlesSnow,
       needlesOrange,
-      needlesVariations: [needlesSnow, needlesGreen, needlesOrange],
+      needlesSnow,
+      needlesGold,
+      needlesCrimson,
+      needlesSpruce,
+      needlesVariations: allNeedleMaterials,
       livingBark,
       deadBark,
+      createNeedleVariant(name, hslOptions) {
+        return makeNeedleMaterial(name, hslOptions);
+      },
       getRandomNeedleMaterial(rng) {
         const val = rng !== undefined ? rng : Math.random();
-        const idx = Math.floor(Math.abs(val) * 3) % 3;
-        return [needlesSnow, needlesGreen, needlesOrange][idx];
+        const idx = Math.floor(Math.abs(val) * allNeedleMaterials.length) % allNeedleMaterials.length;
+        return allNeedleMaterials[idx];
       },
     };
   }

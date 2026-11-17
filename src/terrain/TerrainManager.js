@@ -24,7 +24,15 @@ export class TerrainManager {
     this.treeShadowRange = options.treeShadowRange || 55; // Proximity range in meters for real-time tree shadows
 
     this.seed = options.seed !== undefined ? options.seed : 1337;
-    this.heightmap = new TerrainHeightmap(this.seed);
+    this.terrainConfig = {
+      mountainIntensity: options.mountainIntensity ?? 1.0,
+      parkIntensity: options.parkIntensity ?? 1.0,
+      corridorWalls: options.corridorWalls ?? 1.0,
+      rollerScale: options.rollerScale ?? 1.0,
+      kickerScale: options.kickerScale ?? 1.0,
+      biomeFrequency: options.biomeFrequency ?? 0.0016,
+    };
+    this.heightmap = new TerrainHeightmap(this.seed, this.terrainConfig);
     this.materialFactory = new TerrainMaterialFactory();
 
     // Active model identifier ('/models/...', 'all', etc.)
@@ -89,6 +97,78 @@ export class TerrainManager {
     for (const chunk of this.loadedChunks.values()) {
       chunk.rebuildTrees(this.scene);
     }
+  }
+
+  /**
+   * Rebuilds both terrain meshes and tree instances across all active chunks immediately.
+   */
+  rebuildAllTerrain() {
+    for (const chunk of this.loadedChunks.values()) {
+      chunk.rebuildMesh();
+      chunk.rebuildTrees(this.scene);
+    }
+  }
+
+  /**
+   * Returns current terrain generation configuration.
+   */
+  getTerrainConfig() {
+    return this.heightmap.getConfig();
+  }
+
+  /**
+   * Updates terrain configuration and immediately re-meshes active chunks if rebuild=true.
+   * @param {Object} newConfig
+   * @param {boolean} [rebuild=true]
+   */
+  setTerrainConfig(newConfig, rebuild = true) {
+    this.heightmap.setConfig(newConfig);
+    if (rebuild) {
+      this.rebuildAllTerrain();
+    }
+  }
+
+  /**
+   * Sets an individual terrain property.
+   * @param {string} key
+   * @param {number} val
+   * @param {boolean} [rebuild=true]
+   */
+  setTerrainProperty(key, val, rebuild = true) {
+    this.heightmap.setProperty(key, val);
+    if (rebuild) {
+      this.rebuildAllTerrain();
+    }
+  }
+
+  /**
+   * Queries biome classification and continuous blend weights at a world position.
+   * @param {number} worldX
+   * @param {number} worldZ
+   * @returns {{ raw: number, wCirque: number, wPark: number, wBowls: number, primary: 'cirque'|'park'|'bowls' }}
+   */
+  getBiomeAt(worldX, worldZ) {
+    return this.heightmap.getBiomeData(worldX, worldZ);
+  }
+
+  /**
+   * Checks whether a given world coordinate is near or on a frozen lake.
+   * @param {number} worldX
+   * @param {number} worldZ
+   * @param {number} [clearance=10.0]
+   * @returns {boolean}
+   */
+  isNearLake(worldX, worldZ, clearance = 10.0) {
+    return this.heightmap.isNearLake(worldX, worldZ, clearance);
+  }
+
+  /**
+   * Finds the nearest flat frozen lake to a world position.
+   * @param {number} worldX
+   * @param {number} worldZ
+   */
+  getNearestLake(worldX, worldZ) {
+    return this.heightmap.getNearestLake(worldX, worldZ);
   }
 
   /**
@@ -332,8 +412,8 @@ export class TerrainManager {
       if (distSq <= (this.renderDistance + 1) * (this.renderDistance + 1)) {
         if (!this.loadedChunks.has(key)) {
           const isNear = distSq <= 2;
-          // Distant chunks use lightweight 10-segment geometry; near chunks use detailed 28-segment geometry
-          const segments = isNear ? this.chunkSegments : 10;
+          // Distant chunks use lightweight 18-segment geometry; near chunks use detailed 32-segment geometry
+          const segments = isNear ? this.chunkSegments : 18;
 
           const chunk = new TerrainChunk(
             item.cx,
