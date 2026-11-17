@@ -179,23 +179,41 @@ export class TerrainChunk {
   }
 
   /**
-   * Upgrades resolution seamlessly when chunk enters player proximity.
-   * All chunks retain the original TerrainMaterial.
-   * @param {boolean} isNear
-   * @param {number} [targetSegments=28]
+   * Updates terrain resolution seamlessly when distance tier changes.
+   * Disposes old geometry and generates new LOD plane geometry in-place.
+   * @param {number} targetSegments
    */
-  setNearState(isNear, targetSegments = 28) {
+  setTargetSegments(targetSegments) {
     if (this.isDisposed) return;
-    this.isNear = isNear;
+    if (this.segments === targetSegments) return;
 
-    // Upgrade resolution seamlessly if chunk became near and has low segment count
-    if (isNear && this.segments < targetSegments && this.mesh) {
+    this.segments = targetSegments;
+    this.isNear = (targetSegments >= 16);
+
+    if (this.mesh) {
       const oldGeom = this.mesh.geometry;
-      this.segments = targetSegments;
-      const { geometry } = this._buildGeometry();
+      const { geometry, minY, maxY } = this._buildGeometry();
       this.mesh.geometry = geometry;
       if (oldGeom) oldGeom.dispose();
+
+      const half = this.size * 0.5;
+      if (this.terrainBounds) {
+        this.terrainBounds.set(
+          new THREE.Vector3(this.worldCenterX - half, minY - 1, this.worldCenterZ - half),
+          new THREE.Vector3(this.worldCenterX + half, maxY + 1, this.worldCenterZ + half)
+        );
+      }
     }
+  }
+
+  /**
+   * Backwards-compatible resolution update.
+   * @param {boolean} isNear
+   * @param {number} [nearSegments=26]
+   * @param {number} [distantSegments=8]
+   */
+  setNearState(isNear, nearSegments = 20, distantSegments = 8) {
+    this.setTargetSegments(isNear ? nearSegments : distantSegments);
   }
 
   /**
@@ -290,12 +308,14 @@ export class TerrainChunk {
     const isWithinShadowRange = (dist <= shadowRange);
 
     // --- 3. LOD Selection with Hysteresis ---
+    // Near LOD (full 3D trees): chunk the player is on (dist == 0) and directly adjacent chunks when close (dist <= 28m)
+    // Distant chunks (> 36m) smoothly transition to ultra-lightweight 4-poly cross-quad billboard impostors
     let targetLOD = this.activeTreeLOD;
     if (this.activeTreeLOD === null) {
-      targetLOD = dist <= 55 ? 0 : 1;
-    } else if (this.activeTreeLOD === 0 && dist > 65) {
+      targetLOD = dist <= 28 ? 0 : 1;
+    } else if (this.activeTreeLOD === 0 && dist > 36) {
       targetLOD = 1;
-    } else if (this.activeTreeLOD === 1 && dist <= 52) {
+    } else if (this.activeTreeLOD === 1 && dist <= 26) {
       targetLOD = 0;
     }
 

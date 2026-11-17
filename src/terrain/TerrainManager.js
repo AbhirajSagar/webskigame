@@ -18,14 +18,15 @@ export class TerrainManager {
     this.scene = scene;
 
     this.chunkSize = options.chunkSize || 64;
-    this.chunkSegments = options.chunkSegments || 28;
-    this.renderDistance = options.renderDistance || 4; // 256m view radius
+    this.chunkSegments = options.chunkSegments || 18; // Uniform resolution across all chunks (guarantees zero T-junction cracks)
+    this.renderDistance = options.renderDistance || 4; // View radius in chunks (reduced surrounding chunk count)
     this.maxBuildsPerFrame = options.maxBuildsPerFrame || 1;
-    this.treeShadowRange = options.treeShadowRange || 55; // Proximity range in meters for real-time tree shadows
+    this.treeShadowRange = options.treeShadowRange || 36; // Proximity range in meters for real-time tree shadows
 
     this.seed = options.seed !== undefined ? options.seed : 1337;
     this.terrainConfig = {
       mountainIntensity: options.mountainIntensity ?? 1.0,
+      cliffIntensity: options.cliffIntensity ?? 1.0,
       parkIntensity: options.parkIntensity ?? 1.0,
       corridorWalls: options.corridorWalls ?? 1.0,
       rollerScale: options.rollerScale ?? 1.0,
@@ -47,6 +48,8 @@ export class TerrainManager {
       heightmap: this.heightmap,
       treeModel: initialTreeModel,
       chunkSize: this.chunkSize,
+      treeGridStep: options.treeGridStep,
+      treeDensity: options.treeDensity,
       renderer: this.renderer,
       scene: this.scene,
     });
@@ -311,6 +314,16 @@ export class TerrainManager {
     this._updateTreeLODs(px, pz);
   }
 
+  /**
+   * Uniform resolution across all chunks guarantees identical border vertex spacing
+   * and completely eliminates T-junction cracks and seams.
+   * @param {number} [distSq]
+   * @returns {number}
+   */
+  getChunkSegmentsForDistSq(distSq = 0) {
+    return this.chunkSegments;
+  }
+
   _updateGrid(centerCX, centerCZ, isInitial = false) {
     const r = this.renderDistance;
     const rSq = r * r;
@@ -324,9 +337,9 @@ export class TerrainManager {
         chunk.dispose(this.scene);
         this.loadedChunks.delete(key);
       } else {
-        // Dynamically update near/distant material & LOD geometry as player moves
-        const isNear = (dx * dx + dz * dz) <= 2;
-        chunk.setNearState(isNear, this.chunkSegments);
+        // Dynamically update terrain resolution & LOD geometry as player moves
+        const targetSegments = this.getChunkSegmentsForDistSq(dx * dx + dz * dz);
+        chunk.setTargetSegments(targetSegments);
       }
     }
 
@@ -342,13 +355,14 @@ export class TerrainManager {
 
           if (!this.loadedChunks.has(key) && !this.queuedKeys.has(key)) {
             const isNear = distSq <= 2;
+            const segments = this.getChunkSegmentsForDistSq(distSq);
             // If initial load and within immediate 3x3 radius, build immediately
             if (isInitial && isNear) {
               const chunk = new TerrainChunk(
                 cx,
                 cz,
                 this.chunkSize,
-                this.chunkSegments,
+                segments,
                 this.heightmap,
                 this.materialFactory,
                 this.treeGenerator,
@@ -412,8 +426,7 @@ export class TerrainManager {
       if (distSq <= (this.renderDistance + 1) * (this.renderDistance + 1)) {
         if (!this.loadedChunks.has(key)) {
           const isNear = distSq <= 2;
-          // Distant chunks use lightweight 18-segment geometry; near chunks use detailed 32-segment geometry
-          const segments = isNear ? this.chunkSegments : 18;
+          const segments = this.getChunkSegmentsForDistSq(distSq);
 
           const chunk = new TerrainChunk(
             item.cx,

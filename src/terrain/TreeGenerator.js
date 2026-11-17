@@ -141,6 +141,8 @@ export class TreeGenerator {
     this.seed = options.seed || 1337;
     this.heightmap = options.heightmap;
     this.chunkSize = options.chunkSize || 64;
+    this.treeGridStep = options.treeGridStep || 14.0; // Increased spacing between trees for natural alpine glades
+    this.treeDensity = options.treeDensity !== undefined ? options.treeDensity : 0.45; // Reduced spawn density multiplier (0.45 vs 0.65)
 
     // Environmental density noise generators
     this.treeNoise = new SimplexNoise(this.seed + 777);
@@ -591,7 +593,7 @@ export class TreeGenerator {
         }
       }
     }
-    const branchRadius = maxBranchDistSq > 0 ? Math.sqrt(maxBranchDistSq) : 4.5;
+    const branchRadius = Math.max(0.8, Math.min(2.0, maxBranchDistSq > 0 ? Math.sqrt(maxBranchDistSq) : 1.5));
 
     const sharedMats = TreeGenerator.getSharedMaterials(this.seed);
 
@@ -678,8 +680,8 @@ export class TreeGenerator {
       list.push({ x, y, z, scaleHash, rotXHash, rotYHash, rotZHash });
     };
 
-    // Organic spacing grid
-    const treeGridStep = 10.5;
+    // Organic spacing grid with wider natural spacing
+    const treeGridStep = this.treeGridStep || 14.0;
     const cells = Math.floor(this.chunkSize / treeGridStep);
 
     for (let gx = 0; gx < cells; gx++) {
@@ -723,7 +725,7 @@ export class TreeGenerator {
         if (density < -0.02) continue;
 
         const prob = Math.min(1.0, (density + 0.02) * 1.6) * biomeDensityFactor;
-        if (spawnHash >= prob * 0.65) continue;
+        if (spawnHash >= prob * (this.treeDensity || 0.45)) continue;
 
         // 5. Timberline & Snag selection
         // Dried trees (snags) are natural alpine accents: balanced at ~8% in valleys and ski slopes,
@@ -845,7 +847,7 @@ export class TreeGenerator {
       instMesh3D.computeBoundingSphere();
       instMesh3D.computeBoundingBox();
       instMesh3D.castShadow = true;
-      instMesh3D.receiveShadow = true;
+      instMesh3D.receiveShadow = false; // Disabling PCF shadow sampling on foliage saves millions of texture fetches while snow terrain receives shadows
       createdMeshes3D.push(instMesh3D);
 
       if (instMeshImp) {

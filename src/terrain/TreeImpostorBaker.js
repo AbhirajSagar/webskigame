@@ -208,7 +208,7 @@ export class TreeImpostorBaker {
     const material = new THREE.MeshBasicMaterial({
       name: `ImpostorMat_${model.name}`,
       map: rt.texture,
-      transparent: true,
+      transparent: false,
       alphaTest: alphaCutoff,
       depthWrite: true,
       side: THREE.DoubleSide,

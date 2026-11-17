@@ -38,7 +38,7 @@ class FoliageTypePool {
 
     this.material = new THREE.MeshBasicMaterial({
       map: this.texture,
-      transparent: true,
+      transparent: false,
       alphaTest: 0.28,
       depthTest: true,
       depthWrite: true,
@@ -81,6 +81,7 @@ class FoliageTypePool {
 
     this._dummy = new THREE.Object3D();
     this._nextIndex = 0;
+    this.activeCount = 0;
 
     // Initialize all particle matrices off-screen
     for (let i = 0; i < this.maxCount; i++) {
@@ -132,6 +133,9 @@ class FoliageTypePool {
     this._rotVelocities[pIdx + 1] = (Math.random() - 0.5) * 18.0;
     this._rotVelocities[pIdx + 2] = (Math.random() - 0.5) * 16.0;
 
+    if (this._lifetimes[idx] <= 0) {
+      this.activeCount++;
+    }
     this._lifetimes[idx] = lifetime;
     this._maxLifetimes[idx] = lifetime;
     this._baseScales[idx] = scale;
@@ -303,6 +307,7 @@ class FoliageTypePool {
    */
   update(dt, playerPos, playerVel, cameraPos, forwardDir, rightDir) {
     if (!this.mesh) return;
+    if (this.activeCount <= 0) return;
 
     let hasActiveParticles = false;
 
@@ -336,6 +341,9 @@ class FoliageTypePool {
       if (this._lifetimes[i] > 0) {
         hasActiveParticles = true;
         this._lifetimes[i] -= dt;
+        if (this._lifetimes[i] <= 0) {
+          this.activeCount = Math.max(0, this.activeCount - 1);
+        }
 
         const pIdx = i * 3;
 

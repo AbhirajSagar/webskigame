@@ -173,7 +173,7 @@ export class TreeTextureFactory {
         roughness: 1.0,
         metalness: 0.0,
         side: THREE.DoubleSide,
-        transparent: true,
+        transparent: false, // Opaque cutout pipeline enables GPU Early-Z rejection, eliminating massive foliage overdraw
         alphaTest: 0.40,
         depthWrite: true,
         seed,

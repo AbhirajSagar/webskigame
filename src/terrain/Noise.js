@@ -164,6 +164,7 @@ export class TerrainHeightmap {
     this.seed = seed;
     this.options = {
       mountainIntensity: options.mountainIntensity ?? 1.0,
+      cliffIntensity: options.cliffIntensity ?? 1.0,
       parkIntensity: options.parkIntensity ?? 1.0,
       corridorWalls: options.corridorWalls ?? 1.0,
       rollerScale: options.rollerScale ?? 1.0,
@@ -260,8 +261,10 @@ export class TerrainHeightmap {
     // Natural undulating valley grade: waves of gentle descent and mountain passes (-15m to +15m)
     const valleyWave = Math.sin(wz * 0.0018) * 13.0 + Math.cos(wz * 0.0036) * 5.5;
 
-    // Flanking mountain walls rise smoothly on both sides of the ski corridor
-    const corridorWalls = Math.pow(smoothstep(35.0, 210.0, distToValley), 1.4) * (65.0 * this.options.corridorWalls);
+    // Flanking mountain walls rise with rocky cliff buttresses along the ski corridor
+    const wallBase = Math.pow(smoothstep(35.0, 210.0, distToValley), 1.4);
+    const cliffButtress = this.simplexCrags.noise2D(wx * 0.0035 + 17.0, wz * 0.0035 + 41.0);
+    const corridorWalls = wallBase * (65.0 + Math.max(0.0, cliffButtress) * 24.0) * this.options.corridorWalls;
 
     // Biome weights
     const biome = this.getBiomeData(x, z);
@@ -282,20 +285,45 @@ export class TerrainHeightmap {
 
     const alpineMass = shapedRidge + billow + corridorWalls;
 
-    // 5. Banked Halfpipe Canyons & Snowboard Gullies (Park Zone)
+    // 5. Alpine Cliff Escarpments & Cirque Headwalls (Sheer Rock Walls)
+    // Geological fault-line cliffs cutting across cirques, ridge flanks, and couloirs
+    const cliffIntensity = this.options.cliffIntensity ?? 1.0;
+    const cragWarp = this.simplexWarp.noise2D(wx * 0.0030, wz * 0.0030) * 12.0;
+    const cragCoordX = (wx + cragWarp) * 0.0018;
+    const cragCoordZ = (wz + cragWarp) * 0.0018;
+    const cragNoise = this.simplexCrags.fbm(cragCoordX, cragCoordZ, 3, 2.1, 0.48);
+    
+    // Asymmetric cliff step: drops sharply over a tight threshold, creating sheer 55°-75° drop-offs
+    const cliffStep = smoothstep(-0.06, 0.06, cragNoise);
+    const cliffHeight = (18.0 + biome.wCirque * 22.0) * smoothstep(0.18, 0.55, continental) * cliffIntensity;
+    const escarpmentCliff = (cliffStep - 0.5) * cliffHeight;
+
+    // 6. Stepped Rock Benches & Freeride Cliff Bands (Pillow Drops)
+    // Terraced rock drops on mid-to-high slopes for airtime cliff jumps
+    const benchMask = smoothstep(0.15, 0.65, Math.abs(cragNoise)) * smoothstep(0.20, 0.60, continental);
+    const rawElevForBenches = alpineMass * 0.4 + escarpmentCliff;
+    const stepSize = 14.0;
+    const stepNorm = rawElevForBenches / stepSize;
+    const stepFloor = Math.floor(stepNorm);
+    const stepFrac = stepNorm - stepFloor;
+    const cliffFace = smoothstep(0.35, 0.65, stepFrac);
+    const terracedElevation = (stepFloor + cliffFace) * stepSize;
+    const cliffBands = (terracedElevation - rawElevForBenches) * benchMask * 0.65 * cliffIntensity;
+
+    // 7. Banked Halfpipe Canyons & Snowboard Gullies (Park Zone)
     // C^2 smooth hyperbolic cross-section
     const canyonRaw = this.simplexCanyon.noise2D(wx * 0.0022 + 18.0, wz * 0.0022 + 51.0);
     const canyonSmooth = Math.sqrt(canyonRaw * canyonRaw + 0.04);
     const canyonBank = (Math.pow(canyonSmooth, 1.4) * 2.0 - 0.70) * 13.0;
     const parkCanyon = canyonBank * (biome.wPark * 0.85 + 0.20) * this.options.parkIntensity;
 
-    // 6. Rolling Powder Bowls & Foothill Glades (Bowls Zone)
+    // 8. Rolling Powder Bowls & Foothill Glades (Bowls Zone)
     const hillsFbm = this.simplexHills.fbm(wx * 0.0018, wz * 0.0018, 4, 2.0, 0.50) * 35.0;
     const billowRaw = this.simplexHills.noise2D(wx * 0.0030 + 25.0, wz * 0.0030 + 63.0);
     const billowSpines = Math.sqrt(billowRaw * billowRaw + 0.04) * 18.0;
     const rollingBowls = (hillsFbm + billowSpines) * smoothstep(0.08, 0.46, continental);
 
-    // 7. Camel-Hump Rollers & Kicker Lips (Smooth Airtime)
+    // 9. Camel-Hump Rollers & Kicker Lips (Smooth Airtime)
     const rollerWave = Math.sin(wx * 0.034 + wz * 0.015) * Math.cos(wz * 0.024);
     const smoothRoller = smoothstep(0.0, 0.85, Math.max(0.0, rollerWave));
     const camelHump = smoothRoller * smoothRoller * 5.8 * this.options.rollerScale;
@@ -304,18 +332,18 @@ export class TerrainHeightmap {
     const kickerSmooth = smoothstep(0.05, 0.80, Math.max(0.0, kickerRaw));
     const kickerLip = kickerSmooth * kickerSmooth * 3.8 * (biome.wPark * 0.70 + 0.35) * this.options.kickerScale;
 
-    // 8. Moraine Floor & Sastrugi
+    // 10. Moraine Floor & Sastrugi
     const moraineFloor = this.simplexBase.fbm(wx * 0.0024, wz * 0.0024, 3, 2.0, 0.48) * 9.0;
     const sastrugi = this.simplexBase.noise2D(wx * 0.012, wz * 0.012) * 0.65;
 
     // Combine features
-    let baseTotal = valleyWave + alpineMass + parkCanyon + rollingBowls + camelHump + kickerLip + moraineFloor + sastrugi;
+    let baseTotal = valleyWave + alpineMass + escarpmentCliff + cliffBands + parkCanyon + rollingBowls + camelHump + kickerLip + moraineFloor + sastrugi;
 
-    // 9. Drop-In Launch Ramp at Spawn (0, 0)
+    // 11. Drop-In Launch Ramp at Spawn (0, 0)
     // Ensures a clean, picturesque ~19° slope facing directly down -Z
     const spawnDist = Math.hypot(x, z);
-    if (spawnDist < 110.0) {
-      const spawnBlend = 1.0 - smoothstep(12.0, 110.0, spawnDist);
+    if (spawnDist < 120.0) {
+      const spawnBlend = 1.0 - smoothstep(12.0, 120.0, spawnDist);
       const spawnRamp = (z * 0.42) * spawnBlend;
       baseTotal = baseTotal * (1.0 - spawnBlend * 0.88) + spawnRamp + 14.0 * spawnBlend;
     }
