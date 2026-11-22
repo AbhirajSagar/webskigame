@@ -72,8 +72,8 @@ export class PlayerController {
     this.airDrag = 0.025;        // Aerodynamic drag in flight
     this.tuckAirDrag = 0.010;    // Reduced drag when tucking
 
-    // Height Cap Tuning (prevents player from going up too high into the air or above elevation)
-    this.maxAirborneHeight = 115;   // Temporarily expanded to 25m so user can test and observe natural jump heights
+    // Height Cap Tuning (removed artificial 115m cap so jumps and flight are uncapped)
+    this.maxAirborneHeight = Infinity;
     this.maxWorldHeight = Infinity; // Maximum world elevation ceiling (optional)
 
     // State flags
@@ -763,19 +763,23 @@ export class PlayerController {
         this.position.x = nextX;
         this.position.z = nextZ;
 
-        // Cap upward takeoff velocity based on height cap
-        const maxTakeoffVy = Math.sqrt(2 * this.gravity * this.maxAirborneHeight);
-        if (this.velocity.y > maxTakeoffVy) {
-          this.velocity.y = maxTakeoffVy;
+        // Cap upward takeoff velocity based on height cap (if configured)
+        if (this.maxAirborneHeight !== Infinity) {
+          const maxTakeoffVy = Math.sqrt(2 * this.gravity * this.maxAirborneHeight);
+          if (this.velocity.y > maxTakeoffVy) {
+            this.velocity.y = maxTakeoffVy;
+          }
         }
 
         this.position.y += this.velocity.y * dt;
 
-        // Enforce height cap immediately on takeoff
-        const currentGround = this.terrainManager.getHeightAt(this.position.x, this.position.z);
-        if (this.position.y > currentGround + this.maxAirborneHeight) {
-          this.position.y = currentGround + this.maxAirborneHeight;
-          if (this.velocity.y > 0) this.velocity.y = 0;
+        // Enforce height cap immediately on takeoff (if configured)
+        if (this.maxAirborneHeight !== Infinity) {
+          const currentGround = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+          if (this.position.y > currentGround + this.maxAirborneHeight) {
+            this.position.y = currentGround + this.maxAirborneHeight;
+            if (this.velocity.y > 0) this.velocity.y = 0;
+          }
         }
         if (this.maxWorldHeight !== Infinity && this.position.y > this.maxWorldHeight) {
           this.position.y = this.maxWorldHeight;
@@ -810,13 +814,15 @@ export class PlayerController {
 
       this.position.addScaledVector(this.velocity, dt);
 
-      // Height cap enforcement: prevent player from going up higher than maxAirborneHeight above snow
-      const currentGroundY = this.terrainManager.getHeightAt(this.position.x, this.position.z);
-      const capY = currentGroundY + this.maxAirborneHeight;
-      if (this.position.y > capY) {
-        this.position.y = capY;
-        if (this.velocity.y > 0) {
-          this.velocity.y = 0; // Stop upward velocity at height cap
+      // Height cap enforcement: prevent player from going up higher than maxAirborneHeight above snow (if configured)
+      if (this.maxAirborneHeight !== Infinity) {
+        const currentGroundY = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+        const capY = currentGroundY + this.maxAirborneHeight;
+        if (this.position.y > capY) {
+          this.position.y = capY;
+          if (this.velocity.y > 0) {
+            this.velocity.y = 0; // Stop upward velocity at height cap
+          }
         }
       }
 

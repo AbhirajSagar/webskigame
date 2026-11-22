@@ -160,8 +160,8 @@ const player = new PlayerController(worldCamera, canvas, terrainManager, scene, 
 
 // --- Alpine Volumetric Particle Cloud System ---
 const cloudSystem = new CloudSystem(scene, {
-  clusterCount: 40,
-  particlesPerCluster: 36, // 1,440 particles forming rich 3D volumetric cloud masses
+  clusterCount: 36,
+  particlesPerCluster: 24, // 864 dense camera-facing billboard particles forming volumetric clouds
   wrapRadius: 1350,
   windSpeed: new THREE.Vector3(3.2, 0.0, 1.6),
   sunDirection: new THREE.Vector3(130, 190, 90).normalize(),
