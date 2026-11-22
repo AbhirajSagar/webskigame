@@ -89,7 +89,7 @@ export class PlayerController {
 
     // First-Person (FPS) Camera Configuration
     this.yaw = 1.35;             // Heading aimed down mountain slope
-    this.pitch = 0.08;           // Natural forward eye-line looking down mountain
+    this.pitch = 0.14;           // Natural forward eye-line slightly down toward slope & board (optimal 9:16 framing)
     this.minPitch = -0.95;       // ~ -55° looking up at alpine peaks / sky
     this.maxPitch = 1.25;        // ~ +72° looking down at snowboard / boots
     this.camera.near = 0.08;     // Clean near clipping to prevent skull/collar interior clipping
@@ -102,10 +102,10 @@ export class PlayerController {
     this.prevMouseX = 0;
     this.prevMouseY = 0;
 
-    // Dynamic Camera FOV parameters (bounded between minFov and maxFov)
-    this.baseFov = camera.fov || 65;
-    this.minFov = 60;
-    this.maxFov = 90;
+    // Dynamic Camera FOV parameters tuned for 9:16 vertical Instagram Reels
+    this.baseFov = camera.fov || 100;
+    this.minFov = 94;
+    this.maxFov = 118;
 
     // Camera shake state (light, subtle grounded tremor on landing)
     this.trauma = 0.0;

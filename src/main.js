@@ -3,10 +3,8 @@ window.THREE = THREE;
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
-import { FpsCounter } from './perf/FpsCounter.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
-import { WireframeToggleUI } from './ui/WireframeToggleUI.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -40,11 +38,15 @@ const scene = new THREE.Scene();
 const fogColor = new THREE.Color(0xc6cdd5);
 scene.fog = new THREE.Fog(fogColor, 200, 850);
 
+// 9:16 Vertical Portrait Aspect Ratio for Instagram Reels / TikTok
+const REELS_ASPECT = 9 / 16; // 0.5625
+const PORTRAIT_BASE_FOV = 100; // Calibrated for natural ~72° horizontal FOV in 9:16
+
 // --- Dual-Camera Setup ---
-// Camera 2: World Camera (renders terrain, mountains, trees, skybox, snow spray, and scenery)
+// Camera 2: World Camera (renders terrain, mountains, trees, skybox, clouds, and scenery)
 const worldCamera = new THREE.PerspectiveCamera(
-  65,
-  window.innerWidth / window.innerHeight,
+  PORTRAIT_BASE_FOV,
+  REELS_ASPECT,
   0.5,
   2500
 );
@@ -52,8 +54,8 @@ worldCamera.layers.set(0);
 
 // Camera 1: Character & Snowboard Camera (renders on top of the world)
 const characterCamera = new THREE.PerspectiveCamera(
-  65,
-  window.innerWidth / window.innerHeight,
+  PORTRAIT_BASE_FOV,
+  REELS_ASPECT,
   0.05,
   100
 );
@@ -69,9 +71,34 @@ const renderer = new THREE.WebGLRenderer({
   antialias: true,
   powerPreference: 'high-performance',
 });
-renderer.setSize(window.innerWidth, window.innerHeight);
-// Clamping pixel ratio to 1.0 maximizes fillrate performance on high-DPI/Retina screens
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
+
+function resizeViewport() {
+  const winW = window.innerWidth;
+  const winH = window.innerHeight;
+  let targetW, targetH;
+
+  if (winW / winH > REELS_ASPECT) {
+    targetH = winH;
+    targetW = Math.round(targetH * REELS_ASPECT);
+  } else {
+    targetW = winW;
+    targetH = Math.round(targetW / REELS_ASPECT);
+  }
+
+  worldCamera.aspect = REELS_ASPECT;
+  worldCamera.updateProjectionMatrix();
+
+  characterCamera.aspect = REELS_ASPECT;
+  characterCamera.updateProjectionMatrix();
+
+  renderer.setSize(targetW, targetH);
+  // High-fidelity pixel ratio up to 2.0 for razor-sharp 1080x1920 video capture
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
+}
+
+resizeViewport();
+window.addEventListener('resize', resizeViewport);
+
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
@@ -217,34 +244,8 @@ loadingOverlay.onPlay(() => {
   player.start();
 });
 
-// --- High-Performance FPS & Telemetry Counter (Top Left) ---
-const fpsCounter = new FpsCounter();
-
-// --- Wireframe / Solid Rendering Toggle UI Button (Top Right HUD) ---
-const wireframeUI = new WireframeToggleUI({
-  scene,
-  player,
-  terrainManager,
-  cloudSystem,
-});
-
-// Expose handle for runtime telemetry and debugging
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, wireframeUI };
-
-// --- Window Resize Listener ---
-window.addEventListener('resize', () => {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-
-  worldCamera.aspect = width / height;
-  worldCamera.updateProjectionMatrix();
-
-  characterCamera.aspect = width / height;
-  characterCamera.updateProjectionMatrix();
-
-  renderer.setSize(width, height);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
-});
+// Expose handle for runtime telemetry and debugging (clean recording mode, no HUD UI)
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem };
 
 // --- Simulation & Render Loop ---
 const clock = new THREE.Clock();
@@ -303,9 +304,6 @@ function animate() {
   renderer.render(scene, characterCamera);
   scene.background = savedBg;
   renderer.shadowMap.autoUpdate = true;
-
-  // 4. Update FPS & Ski / Flight Telemetry (including real-time airborne height)
-  fpsCounter.update(player.getSpeedKmh(), player.isAirborne(), player.mode, player.getAltitude());
 }
 
 animate();
