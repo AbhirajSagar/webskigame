@@ -5,6 +5,7 @@ import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
+import { VideoRecorder } from './ui/VideoRecorder.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -70,6 +71,7 @@ const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
   powerPreference: 'high-performance',
+  preserveDrawingBuffer: true, // Enables clean 60 FPS video capture without black frame hitches
 });
 
 function resizeViewport() {
@@ -244,8 +246,11 @@ loadingOverlay.onPlay(() => {
   player.start();
 });
 
+// --- Instagram Reels 60 FPS Video Recorder (Canvas capture, zero UI in video) ---
+const videoRecorder = new VideoRecorder(canvas, { fps: 60, bitrate: 16000000 });
+
 // Expose handle for runtime telemetry and debugging (clean recording mode, no HUD UI)
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, videoRecorder };
 
 // --- Simulation & Render Loop ---
 const clock = new THREE.Clock();
