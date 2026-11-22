@@ -114,12 +114,26 @@ export class PlayerController {
     // Tree trunk collision parameters (compact capsule for snowboarder)
     this.treeCollisionRadius = 0.22;
     this._nearbyTrunks = [];
+    this._nearbyPoles = [];
 
-    // Input state: strictly forward acceleration (W / ArrowUp)
+    // Grind Rail & Wire System state
+    this.grindSystem = null;
+    this.isGrinding = false;
+    this.currentWireSegment = null;
+    this.grindParam = 0.0;
+    this.grindSpeed = 0.0;
+    this.wireTangent = new THREE.Vector3(0, 0, -1);
+    this.grindCooldown = 0.0;
+
+    // Input state: forward acceleration, braking, and carving
     this.keys = {
       forward: false,
+      backward: false,
+      left: false,
+      right: false,
     };
     this.keyboardForward = false;
+    this.keyboardBackward = false;
     this.touchForward = false;
     this.steerBank = 0.0;
 
@@ -305,6 +319,10 @@ export class PlayerController {
     this.keys.forward = this.keyboardForward || this.touchForward;
   }
 
+  setGrindSystem(grindSystem) {
+    this.grindSystem = grindSystem;
+  }
+
   _onKeyDown(e) {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
       return;
@@ -314,12 +332,49 @@ export class PlayerController {
       this.keyboardForward = true;
       this.keys.forward = true;
     }
+    if (e.code === 'KeyS' || e.code === 'ArrowDown' || e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') {
+      this.keyboardBackward = true;
+      this.keys.backward = true;
+    }
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+      this.keys.left = true;
+    }
+    if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+      this.keys.right = true;
+    }
+    if (e.code === 'Space') {
+      if (this.isGrinding) {
+        // Pop off the wire into the air
+        this.isGrinding = false;
+        this.isGrounded = false;
+        this.airTime = 0.05;
+        this.velocity.y = Math.max(this.velocity.y + 7.5, 7.5);
+        this.trauma = 0.15;
+        this.currentWireSegment = null;
+        this.grindCooldown = 0.35;
+      } else if (this.isGrounded && this.isPlaying) {
+        // Jump pop off snow
+        this.isGrounded = false;
+        this.airTime = 0.05;
+        this.velocity.y = Math.max(this.velocity.y + this.jumpForce, this.jumpForce);
+      }
+    }
   }
 
   _onKeyUp(e) {
     if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') {
       this.keyboardForward = false;
       this.keys.forward = this.touchForward;
+    }
+    if (e.code === 'KeyS' || e.code === 'ArrowDown' || e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') {
+      this.keyboardBackward = false;
+      this.keys.backward = false;
+    }
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+      this.keys.left = false;
+    }
+    if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+      this.keys.right = false;
     }
   }
 
@@ -472,7 +527,7 @@ export class PlayerController {
   }
 
   isAirborne() {
-    return !this.isGrounded && this.mode === 'ski';
+    return !this.isGrounded && !this.isGrinding && this.mode === 'ski';
   }
 
   /**
@@ -668,11 +723,130 @@ export class PlayerController {
   }
 
   /**
+   * High-speed physical grind along suspended wire catenaries.
+   * Accelerates naturally with slope gravity down the mountain;
+   * supports hopping off laterally (A/D) or jumping (Space).
+   * @param {number} dt
+   * @private
+   */
+  _updateGrindPhysics(dt) {
+    const seg = this.currentWireSegment;
+    if (!seg) {
+      this.isGrinding = false;
+      this.isGrounded = false;
+      return;
+    }
+
+    // 1. Get wire tangent at current parametric point
+    seg.getTangentAt(this.grindParam, this.wireTangent);
+
+    // 2. Downhill gravity acceleration along wire tangent
+    // Downhill tangent has negative Y (since -Y is down in world coordinates)
+    const downhillSlopeFactor = Math.max(0, -this.wireTangent.y);
+    const gravityBoost = downhillSlopeFactor * this.gravity * 1.45;
+
+    // Player inputs: holding W accelerates, holding S brakes
+    let accel = gravityBoost;
+    if (this.keys.forward) {
+      accel += 12.0;
+    }
+    if (this.keys.backward) {
+      accel -= 32.0;
+    }
+
+    // Steel cable friction
+    this.grindSpeed += accel * dt;
+    this.grindSpeed *= (1.0 - 0.012 * dt);
+
+    // Clamp between minimum glide speed and terminal grinding velocity
+    this.grindSpeed = Math.max(14.0, Math.min(52.0, this.grindSpeed));
+
+    // 3. Advance parametric coordinate t along current segment
+    const deltaT = (this.grindSpeed * dt) / Math.max(1.0, seg.length);
+    this.grindParam += deltaT;
+
+    // 4. Lateral hop-off / dismount check (A / D keys)
+    if (this.keys.left || this.keys.right) {
+      const hopSide = this.keys.left ? -1 : 1;
+      _scratchRight.set(-this.wireTangent.z, 0, this.wireTangent.x).normalize();
+
+      this.velocity.copy(this.wireTangent).multiplyScalar(this.grindSpeed);
+      this.velocity.addScaledVector(_scratchRight, hopSide * 5.8);
+      this.velocity.y = Math.max(this.velocity.y + 4.2, 4.2);
+
+      this.isGrinding = false;
+      this.isGrounded = false;
+      this.airTime = 0.05;
+      this.currentWireSegment = null;
+      this.grindCooldown = 0.35;
+      this.trauma = 0.12;
+      return;
+    }
+
+    // 5. Check segment endpoints (transfers to next pole span or air launch)
+    if (this.grindParam >= 1.0) {
+      if (seg.nextSegment) {
+        // Smooth chain transfer to next segment in the line
+        const excessT = this.grindParam - 1.0;
+        this.currentWireSegment = seg.nextSegment;
+        this.grindParam = excessT * (seg.length / Math.max(1.0, seg.nextSegment.length));
+        this.currentWireSegment.getTangentAt(this.grindParam, this.wireTangent);
+      } else {
+        // Launch off the end of the wire into the alpine air!
+        this.velocity.copy(this.wireTangent).multiplyScalar(this.grindSpeed * 1.08);
+        this.velocity.y = Math.max(this.velocity.y + 6.8, 6.8);
+        this.isGrinding = false;
+        this.isGrounded = false;
+        this.airTime = 0.05;
+        this.currentWireSegment = null;
+        this.grindCooldown = 0.40;
+        this.trauma = 0.22;
+        return;
+      }
+    } else if (this.grindParam < 0.0) {
+      if (seg.prevSegment) {
+        this.currentWireSegment = seg.prevSegment;
+        this.grindParam = 1.0 + this.grindParam;
+      } else {
+        this.isGrinding = false;
+        this.isGrounded = false;
+        this.airTime = 0.05;
+        this.currentWireSegment = null;
+        this.grindCooldown = 0.35;
+        return;
+      }
+    }
+
+    // 6. Snap physical position to exact wire catenary point (with slight height offset so board sits on cable)
+    this.currentWireSegment.getPointAt(this.grindParam, this.position);
+    this.position.y += (this.currentWireSegment.radius || 0.04);
+    this.currentWireSegment.getTangentAt(this.grindParam, this.wireTangent);
+
+    // Update velocity vector
+    this.velocity.copy(this.wireTangent).multiplyScalar(this.grindSpeed);
+    this.isGrounded = false;
+    this.airTime = 0.0;
+
+    // Smoothly align camera yaw slightly towards wire heading while grinding
+    const wireYaw = Math.atan2(-this.wireTangent.x, -this.wireTangent.z);
+    this.yaw = THREE.MathUtils.damp(this.yaw, wireYaw, 3.5, dt);
+  }
+
+  /**
    * Grounded alpine skiing and snowboarding physics engine
    * Accelerates with W / Up Arrow; steers smoothly via mouse gaze
    * @private
    */
   _updateSkiPhysics(dt, forward, right) {
+    if (this.grindCooldown > 0) {
+      this.grindCooldown -= dt;
+    }
+
+    if (this.isGrinding) {
+      this._updateGrindPhysics(dt);
+      return;
+    }
+
     _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
     _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
 
@@ -814,6 +988,23 @@ export class PlayerController {
       this.airTime += dt;
       this.velocity.y -= this.gravity * dt;
 
+      // Check for grinding wire lock-in
+      if (this.grindSystem && !this.isGrinding && this.isPlaying && this.grindCooldown <= 0) {
+        const lock = this.grindSystem.checkGrindLock(this.position, this.velocity);
+        if (lock) {
+          this.isGrinding = true;
+          this.isGrounded = false;
+          this.currentWireSegment = lock.segment;
+          this.grindParam = lock.t;
+          const initialSpeed = Math.max(16.0, this.velocity.length());
+          this.grindSpeed = initialSpeed;
+          lock.segment.getTangentAt(lock.t, this.wireTangent);
+          this.velocity.copy(this.wireTangent).multiplyScalar(this.grindSpeed);
+          this.trauma = Math.min(0.35, this.trauma + 0.15);
+          return;
+        }
+      }
+
       const activeAirDrag = isAccelerating ? this.tuckAirDrag : this.airDrag;
       this.velocity.x -= this.velocity.x * activeAirDrag * dt;
       this.velocity.z -= this.velocity.z * activeAirDrag * dt;
@@ -880,14 +1071,28 @@ export class PlayerController {
    * @private
    */
   _resolveTrunkCollisions(prevX, prevZ) {
-    if (!this.terrainManager || !this.terrainManager.getNearbyTrunkColliders) return;
+    if (this.isGrinding) return;
 
-    const nearbyTrunks = this.terrainManager.getNearbyTrunkColliders(
-      this.position.x,
-      this.position.z,
-      12.0,
-      this._nearbyTrunks
-    );
+    let nearbyTrunks = [];
+    if (this.terrainManager?.getNearbyTrunkColliders) {
+      nearbyTrunks = this.terrainManager.getNearbyTrunkColliders(
+        this.position.x,
+        this.position.z,
+        12.0,
+        this._nearbyTrunks
+      ) || [];
+    }
+    if (this.grindSystem?.getNearbyPoleColliders) {
+      const poles = this.grindSystem.getNearbyPoleColliders(
+        this.position.x,
+        this.position.z,
+        12.0,
+        this._nearbyPoles
+      );
+      if (poles && poles.length > 0) {
+        nearbyTrunks = nearbyTrunks.concat(poles);
+      }
+    }
 
     if (!nearbyTrunks || nearbyTrunks.length === 0) return;
 
