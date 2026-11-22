@@ -5,6 +5,7 @@ import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { FpsCounter } from './perf/FpsCounter.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
+import { CloudSystem } from './environment/CloudSystem.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -157,8 +158,20 @@ const terrainManager = new TerrainManager(scene, {
 // --- Player Controller (First-Person FPS Skater & Snowboard System) ---
 const player = new PlayerController(worldCamera, canvas, terrainManager, scene, characterCamera);
 
+// --- Alpine Volumetric Particle Cloud System ---
+const cloudSystem = new CloudSystem(scene, {
+  clusterCount: 32,
+  particlesPerCluster: 12,
+  wrapRadius: 1350,
+  windSpeed: new THREE.Vector3(3.6, 0.0, 1.8),
+  sunDirection: new THREE.Vector3(130, 190, 90).normalize(),
+  fogColor,
+  fogNear: 200,
+  fogFar: 850,
+});
+
 // Expose handle for runtime telemetry and debugging
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem };
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
@@ -259,6 +272,9 @@ function animate() {
 
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, worldCamera);
+
+  // Update volumetric cloud particles (wind drift, billow pulse, toroidal wrapping around player)
+  cloudSystem.update(elapsedTime, player.position);
 
   // 3. Two-Camera Composite Render:
   // Pass 1: Render world (terrain, trees, shadows, environment) with worldCamera
