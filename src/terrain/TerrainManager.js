@@ -17,11 +17,11 @@ export class TerrainManager {
   constructor(scene, options = {}) {
     this.scene = scene;
 
-    this.chunkSize = options.chunkSize || 64;
-    this.chunkSegments = options.chunkSegments || 18; // Uniform resolution across all chunks (guarantees zero T-junction cracks)
-    this.renderDistance = options.renderDistance || 4; // View radius in chunks (reduced surrounding chunk count)
+    this.chunkSize = options.chunkSize || 128;
+    this.chunkSegments = options.chunkSegments || 20; // High-detail resolution for near chunks
+    this.renderDistance = options.renderDistance || 6; // Expanded view radius in chunks
     this.maxBuildsPerFrame = options.maxBuildsPerFrame || 1;
-    this.treeShadowRange = options.treeShadowRange || 36; // Proximity range in meters for real-time tree shadows
+    this.treeShadowRange = options.treeShadowRange || 48; // Proximity range in meters for real-time tree shadows
 
     this.seed = options.seed !== undefined ? options.seed : 1337;
     this.terrainConfig = {
@@ -80,6 +80,10 @@ export class TerrainManager {
     this.buildQueue = [];
     this.queuedKeys = new Set();
 
+    // Re-meshing queue for asynchronous, frame-budgeted terrain LOD transitions
+    this.remeshQueue = [];
+    this.queuedRemeshKeys = new Set();
+
     this.lastPlayerChunkX = null;
     this.lastPlayerChunkZ = null;
   }
@@ -106,6 +110,8 @@ export class TerrainManager {
    * Rebuilds both terrain meshes and tree instances across all active chunks immediately.
    */
   rebuildAllTerrain() {
+    this.remeshQueue = [];
+    this.queuedRemeshKeys.clear();
     for (const chunk of this.loadedChunks.values()) {
       chunk.rebuildMesh();
       chunk.rebuildTrees(this.scene);
@@ -234,6 +240,7 @@ export class TerrainManager {
    * @param {THREE.Camera|THREE.Vector3} [cameraOrPosition] - Current active camera (for frustum culling) or position
    */
   update(playerPosition, time, cameraOrPosition) {
+    const frameStartTime = performance.now();
     let cameraPosition = playerPosition;
     let cameraFrustum = null;
 
@@ -275,15 +282,17 @@ export class TerrainManager {
     this._updateTreeLODs(px, pz, cameraFrustum);
 
     // Process queued chunk builds (rate-limited per frame for smooth 60fps)
-    this._processBuildQueue();
+    this._processBuildQueue(frameStartTime);
+
+    // Process queued chunk LOD remeshing (rate-limited per frame for smooth 60fps)
+    this._processRemeshQueue(frameStartTime);
   }
 
   /**
-   * Distance-gates tree LODs, frustum-culls trees not in view, and manages shadow casting:
-   * - Frustum Culled: Trees not intersecting camera frustum or shadow caster bounds are set to visible = false
-   * - Near (<= 55m nearest chunk edge): Full 3D instanced conifer models (casts shadows)
-   * - Distant (> 65m nearest chunk edge): 4-poly cross-quad billboard impostors with baked scene lighting (no shadows)
-   * - Proximity Shadow Culling (> treeShadowRange): Chunks skip shadow pass completely
+   * Updates tree frustum culling and distance-culled shadows for full 3D trees:
+   * - Frustum Culled: Trees not intersecting camera frustum or shadow caster bounds are culled
+   * - Full 3D Rendering: All trees render as detailed 3D conifer models at all view distances
+   * - Proximity Shadow Culling (> treeShadowRange): Distant chunks skip shadow pass to keep performance high
    * @private
    */
   _updateTreeLODs(px, pz, cameraFrustum = null) {
@@ -315,13 +324,51 @@ export class TerrainManager {
   }
 
   /**
-   * Uniform resolution across all chunks guarantees identical border vertex spacing
-   * and completely eliminates T-junction cracks and seams.
+   * Distance-scaled terrain polygon resolution with harmonious steps and hysteresis deadbands:
+   * Prevents boundary thrashing/fluttering when the player moves along chunk boundaries:
+   * - Near (distSq <= 2, ~0-180m): Full resolution (20 segments, 400 quads)
+   * - Mid (distSq <= 6, ~180-310m): Medium detail (16 segments, 256 quads - ~36% reduction)
+   * - Far (distSq <= 12, ~310-440m): Low detail (12 segments, 144 quads - ~64% reduction)
+   * - Very Far (distSq > 12, > 440m up to 768m): Distant detail (8 segments, 64 quads - ~84% reduction)
+   * Combined with perimeter terrain skirts, ensures 100% sealed boundaries with zero cracks.
    * @param {number} [distSq]
+   * @param {number|null} [currentSegments] - Current segment count to apply hysteresis
    * @returns {number}
    */
-  getChunkSegmentsForDistSq(distSq = 0) {
-    return this.chunkSegments;
+  getChunkSegmentsForDistSq(distSq = 0, currentSegments = null) {
+    if (currentSegments === null || currentSegments === undefined) {
+      if (distSq <= 2) return this.chunkSegments;
+      if (distSq <= 6) return 16;
+      if (distSq <= 12) return 12;
+      return 8;
+    }
+
+    // Hysteresis deadbands: require moving farther away before downgrading LOD
+    if (currentSegments >= this.chunkSegments) {
+      // Currently at 20: stay at 20 until distSq >= 3
+      if (distSq < 3) return this.chunkSegments;
+      if (distSq <= 6) return 16;
+      if (distSq <= 12) return 12;
+      return 8;
+    } else if (currentSegments >= 16) {
+      // Currently at 16
+      if (distSq <= 2) return this.chunkSegments; // Upgrade to 20
+      if (distSq <= 7) return 16; // Stay at 16 (hysteresis band 6..7)
+      if (distSq <= 12) return 12;
+      return 8;
+    } else if (currentSegments >= 12) {
+      // Currently at 12
+      if (distSq <= 2) return this.chunkSegments;
+      if (distSq <= 5) return 16; // Upgrade to 16
+      if (distSq <= 13) return 12; // Stay at 12 (hysteresis band 12..13)
+      return 8;
+    } else {
+      // Currently at 8
+      if (distSq <= 2) return this.chunkSegments;
+      if (distSq <= 5) return 16;
+      if (distSq <= 11) return 12; // Upgrade to 12
+      return 8; // Stay at 8
+    }
   }
 
   _updateGrid(centerCX, centerCZ, isInitial = false) {
@@ -333,15 +380,53 @@ export class TerrainManager {
     for (const [key, chunk] of this.loadedChunks.entries()) {
       const dx = chunk.chunkX - centerCX;
       const dz = chunk.chunkZ - centerCZ;
-      if (dx * dx + dz * dz > unloadDistSq) {
+      const distSq = dx * dx + dz * dz;
+
+      if (distSq > unloadDistSq) {
         chunk.dispose(this.scene);
         this.loadedChunks.delete(key);
+        this.queuedRemeshKeys.delete(key);
       } else {
-        // Dynamically update terrain resolution & LOD geometry as player moves
-        const targetSegments = this.getChunkSegmentsForDistSq(dx * dx + dz * dz);
-        chunk.setTargetSegments(targetSegments);
+        // Enqueue LOD changes with hysteresis instead of synchronously stalling the frame
+        const targetSegments = this.getChunkSegmentsForDistSq(distSq, chunk.segments);
+        if (chunk.segments !== targetSegments && !this.queuedRemeshKeys.has(key)) {
+          this.queuedRemeshKeys.add(key);
+          this.remeshQueue.push({
+            chunk,
+            key,
+            targetSegments,
+            distSq,
+            isUpgrade: targetSegments > chunk.segments
+          });
+        }
       }
     }
+
+    // Refresh and prune any pending items in remeshQueue
+    this.remeshQueue = this.remeshQueue.filter(item => {
+      if (!this.loadedChunks.has(item.key) || item.chunk.isDisposed) {
+        this.queuedRemeshKeys.delete(item.key);
+        return false;
+      }
+      const dx = item.chunk.chunkX - centerCX;
+      const dz = item.chunk.chunkZ - centerCZ;
+      item.distSq = dx * dx + dz * dz;
+      item.targetSegments = this.getChunkSegmentsForDistSq(item.distSq, item.chunk.segments);
+      item.isUpgrade = item.targetSegments > item.chunk.segments;
+      if (item.targetSegments === item.chunk.segments) {
+        this.queuedRemeshKeys.delete(item.key);
+        return false;
+      }
+      return true;
+    });
+
+    // Sort remeshQueue: prioritize upgrades (especially nearest player) before downgrades
+    this.remeshQueue.sort((a, b) => {
+      if (a.isUpgrade !== b.isUpgrade) {
+        return a.isUpgrade ? -1 : 1;
+      }
+      return a.distSq - b.distSq;
+    });
 
     // 2. Identify missing chunks within render distance
     const needed = [];
@@ -354,9 +439,9 @@ export class TerrainManager {
           const key = this._chunkKey(cx, cz);
 
           if (!this.loadedChunks.has(key) && !this.queuedKeys.has(key)) {
-            const isNear = distSq <= 2;
+            const isNear = distSq <= 4;
             const segments = this.getChunkSegmentsForDistSq(distSq);
-            // If initial load and within immediate 3x3 radius, build immediately
+            // If initial load and within immediate 5x5 radius, build immediately
             if (isInitial && isNear) {
               const chunk = new TerrainChunk(
                 cx,
@@ -404,13 +489,12 @@ export class TerrainManager {
     });
   }
 
-  _processBuildQueue() {
+  _processBuildQueue(startTime = performance.now()) {
     let buildsThisFrame = 0;
-    const startTime = performance.now();
 
     while (this.buildQueue.length > 0 && buildsThisFrame < this.maxBuildsPerFrame) {
-      // Hard time budget: never spend more than 4ms on chunk creation to guarantee 60 FPS pacing
-      if (buildsThisFrame > 0 && (performance.now() - startTime) > 4.0) {
+      // Hard time budget: never spend more than 3ms on chunk creation to guarantee 60 FPS pacing
+      if (buildsThisFrame > 0 && (performance.now() - startTime) > 3.0) {
         break;
       }
 
@@ -452,6 +536,44 @@ export class TerrainManager {
           this.loadedChunks.set(key, chunk);
           buildsThisFrame++;
         }
+      }
+    }
+  }
+
+  /**
+   * Processes LOD geometry re-meshing asynchronously across frames.
+   * Rate limits re-meshing to at most 1 chunk per frame (or max 2.0ms time budget),
+   * eliminating any frame drop or stutter when moving between distance tiers.
+   * @private
+   */
+  _processRemeshQueue(startTime = performance.now(), maxBudgetMs = 2.0) {
+    if (this.remeshQueue.length === 0) return;
+
+    let remeshedCount = 0;
+    const maxRemeshPerFrame = 1;
+
+    while (this.remeshQueue.length > 0 && remeshedCount < maxRemeshPerFrame) {
+      // Time budget guard: if earlier tasks (or a prior remesh) used up the budget, postpone to next frame
+      if ((performance.now() - startTime) > maxBudgetMs) {
+        break;
+      }
+
+      const item = this.remeshQueue.shift();
+      this.queuedRemeshKeys.delete(item.key);
+
+      const chunk = this.loadedChunks.get(item.key);
+      if (!chunk || chunk.isDisposed) {
+        continue;
+      }
+
+      const dx = chunk.chunkX - (this.lastPlayerChunkX ?? 0);
+      const dz = chunk.chunkZ - (this.lastPlayerChunkZ ?? 0);
+      const distSq = dx * dx + dz * dz;
+
+      const targetSegments = this.getChunkSegmentsForDistSq(distSq, chunk.segments);
+      if (chunk.segments !== targetSegments) {
+        chunk.setTargetSegments(targetSegments);
+        remeshedCount++;
       }
     }
   }

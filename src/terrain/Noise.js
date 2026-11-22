@@ -151,7 +151,7 @@ function smoothstep(edge0, edge1, x) {
   return t * t * (3.0 - 2.0 * t);
 }
 
-export const LAKE_CELL_SIZE = 450.0;
+export const LAKE_CELL_SIZE = 580.0;
 
 /**
  * Natural Geological Terrain Heightmap
@@ -262,9 +262,9 @@ export class TerrainHeightmap {
     const valleyWave = Math.sin(wz * 0.0018) * 13.0 + Math.cos(wz * 0.0036) * 5.5;
 
     // Flanking mountain walls rise with rocky cliff buttresses along the ski corridor
-    const wallBase = Math.pow(smoothstep(35.0, 210.0, distToValley), 1.4);
+    const wallBase = Math.pow(smoothstep(45.0, 280.0, distToValley), 1.4);
     const cliffButtress = this.simplexCrags.noise2D(wx * 0.0035 + 17.0, wz * 0.0035 + 41.0);
-    const corridorWalls = wallBase * (65.0 + Math.max(0.0, cliffButtress) * 24.0) * this.options.corridorWalls;
+    const corridorWalls = wallBase * (85.0 + Math.max(0.0, cliffButtress) * 35.0) * this.options.corridorWalls;
 
     // Biome weights
     const biome = this.getBiomeData(x, z);
@@ -277,11 +277,11 @@ export class TerrainHeightmap {
     
     // Smooth high alpine peak mass with C^2 quadratic ridge profile
     const cirqueMultiplier = 1.0 + biome.wCirque * 0.45;
-    const shapedRidge = (ridge1 * ridge1 * 140.0 + ridge2 * 38.0) * mountainWeight * cirqueMultiplier * this.options.mountainIntensity;
+    const shapedRidge = (ridge1 * ridge1 * 175.0 + ridge2 * 48.0) * mountainWeight * cirqueMultiplier * this.options.mountainIntensity;
 
     // Natural billow peaks and mountain shoulders
     const rawBillow = this.simplexMountains.noise2D(wx * 0.0008 + 45.0, wz * 0.0008 + 72.0);
-    const billow = Math.sqrt(rawBillow * rawBillow + 0.03) * 45.0 * mountainWeight;
+    const billow = Math.sqrt(rawBillow * rawBillow + 0.03) * 58.0 * mountainWeight;
 
     const alpineMass = shapedRidge + billow + corridorWalls;
 
@@ -342,10 +342,10 @@ export class TerrainHeightmap {
     // 11. Drop-In Launch Ramp at Spawn (0, 0)
     // Ensures a clean, picturesque ~19° slope facing directly down -Z
     const spawnDist = Math.hypot(x, z);
-    if (spawnDist < 120.0) {
-      const spawnBlend = 1.0 - smoothstep(12.0, 120.0, spawnDist);
+    if (spawnDist < 140.0) {
+      const spawnBlend = 1.0 - smoothstep(15.0, 140.0, spawnDist);
       const spawnRamp = (z * 0.42) * spawnBlend;
-      baseTotal = baseTotal * (1.0 - spawnBlend * 0.88) + spawnRamp + 14.0 * spawnBlend;
+      baseTotal = baseTotal * (1.0 - spawnBlend * 0.88) + spawnRamp + 16.0 * spawnBlend;
     }
 
     return baseTotal;
@@ -391,8 +391,8 @@ export class TerrainHeightmap {
     const h2_x = h2x - Math.floor(h2x);
     const h2_y = h2y - Math.floor(h2y);
 
-    const radius = 40.0 + 25.0 * h2_y;
-    const shoreWidth = 18.0;
+    const radius = 55.0 + 35.0 * h2_y;
+    const shoreWidth = 24.0;
 
     // Search 7 candidate locations across the cell for the flattest valley basin
     const candidates = [

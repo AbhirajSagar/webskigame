@@ -39,28 +39,28 @@ export const DEFAULT_SNOW_CONFIG = {
  */
 export const DEFAULT_LAKE_CONFIG = {
   // Glacial Cyan Lake Colors
-  lakeDeepColor: '#006680',
-  lakeMidColor: '#118992',
-  lakeBrightColor: '#1096b7',
-  lakeFrostColor: '#72e4b6',
-  lakeCrackColor: '#90fef7',
+  lakeDeepColor: '#005872',
+  lakeMidColor: '#0e7e8b',
+  lakeBrightColor: '#12a4c5',
+  lakeFrostColor: '#80eec5',
+  lakeCrackColor: '#a6ffff',
 
   // Surface & Lighting Optics
-  lakeRoughness: 0,
-  lakeMetalness: 0.74,
-  lakeSpecular: 0.2,
+  lakeRoughness: 0.03,
+  lakeMetalness: 0.76,
+  lakeSpecular: 0.35,
   lakeGlintPower: 640,
-  lakeFresnel: 0,
-  lakeFresnelPower: 2,
-  lakeSSS: 0,
+  lakeFresnel: 0.48,
+  lakeFresnelPower: 2.5,
+  lakeSSS: 0.28,
 
-  // Cracks & Noise Patchiness
-  lakeCrackScale: 0.22,
-  lakeCrackIntensity: 0.1,
-  lakeCrackWidth: 0.032,
-  lakeNoiseScale: 0.022,
-  lakeNoiseThreshold: 0.43,
-  lakeNormalRipples: 0.022,
+  // High-Density Cracks, Micro-Fractures & Noise Patchiness
+  lakeCrackScale: 0.65,        // Increased detail density (previously 0.22) -> ~3x higher density of stress fracture networks
+  lakeCrackIntensity: 0.35,    // Crisp luminous fracture glow (previously 0.1)
+  lakeCrackWidth: 0.020,       // Razor-thin crystalline fissures (previously 0.032)
+  lakeNoiseScale: 0.048,       // Richer organic noise distribution (previously 0.022)
+  lakeNoiseThreshold: 0.36,    // Natural fracture field distribution (previously 0.43)
+  lakeNormalRipples: 0.045,    // High-fidelity frozen flow ripples (previously 0.022)
 };
 
 /**
@@ -175,6 +175,7 @@ export class TerrainMaterialFactory {
       roughness: 0.80,
       metalness: 0.04,
       flatShading: false,
+      side: THREE.DoubleSide,
     });
 
     this.sharedMaterial.onBeforeCompile = (shader) => {
@@ -589,33 +590,48 @@ export class TerrainMaterialFactory {
 
         vec3 lakeIceColor = vec3(0.0);
         if (lakeFactor > 0.001) {
-          // Natural organic multi-scale ice stress fracture system
+          // Ultra-detailed organic multi-scale ice stress fracture system
           vec2 baseIceCoord = vCustomWorldPos.xz * uLakeCrackScale;
 
           // 1. Primary Structural Fissures (Crisp, organic, jagged tension fractures)
-          vec2 pMacro = warpIceCoord(baseIceCoord * 0.65);
+          vec2 pMacro = warpIceCoord(baseIceCoord * 0.75);
           float edge1 = getIceVoronoiEdge(pMacro);
-          float core1 = 1.0 - smoothstep(0.003, uLakeCrackWidth, edge1);
-          float frostGlow1 = (1.0 - smoothstep(0.008, uLakeCrackWidth * 2.3, edge1)) * 0.38;
+          float core1 = 1.0 - smoothstep(0.002, uLakeCrackWidth, edge1);
+          float frostGlow1 = (1.0 - smoothstep(0.005, uLakeCrackWidth * 2.5, edge1)) * 0.42;
 
-          // 2. Secondary Fine Hairlines (Branching surface crazing at detuned angle)
-          vec2 pMicro = warpIceCoord(rotateUV(baseIceCoord * 1.72, 0.63) + vec2(27.4, 19.8));
+          // 2. Secondary High-Density Branching Hairlines (Fine surface crazing at detuned angle)
+          vec2 pMicro = warpIceCoord(rotateUV(baseIceCoord * 1.95, 0.63) + vec2(27.4, 19.8));
           float edge2 = getIceVoronoiEdge(pMicro);
-          float core2 = (1.0 - smoothstep(0.002, uLakeCrackWidth * 0.62, edge2)) * 0.60;
+          float core2 = (1.0 - smoothstep(0.0015, uLakeCrackWidth * 0.65, edge2)) * 0.65;
 
           // 3. Subsurface 3D Parallax Fissures (Deep within clear ice column)
           vec3 viewDir = normalize(uCameraPosition - vCustomWorldPos);
-          vec2 deepShift = viewDir.xz * (0.28 * lakeDepth);
-          vec2 pDeep = warpIceCoord((baseIceCoord + deepShift) * 0.42 + vec2(14.7, 43.1));
+          vec2 deepShift = viewDir.xz * (0.35 * lakeDepth);
+          vec2 pDeep = warpIceCoord((baseIceCoord + deepShift) * 0.55 + vec2(14.7, 43.1));
           float edgeDeep = getIceVoronoiEdge(pDeep);
-          float coreDeep = (1.0 - smoothstep(0.005, uLakeCrackWidth * 1.25, edgeDeep)) * 0.45;
+          float coreDeep = (1.0 - smoothstep(0.003, uLakeCrackWidth * 1.35, edgeDeep)) * 0.50;
 
-          // 4. Organic Stress Mask (Natural variation in fracture intensity across the lake)
-          float stressNoise = sin(vCustomWorldPos.x * 0.06 + sin(vCustomWorldPos.z * 0.07) * 2.2) * cos(vCustomWorldPos.z * 0.05);
+          // 4. Ultra-Dense Micro-Crazing / Needle Frost Layer
+          vec2 pNano = warpIceCoord(rotateUV(baseIceCoord * 3.85, 1.32) + vec2(53.2, 87.1));
+          float edgeNano = getIceVoronoiEdge(pNano);
+          float coreNano = (1.0 - smoothstep(0.001, uLakeCrackWidth * 0.45, edgeNano)) * 0.48;
+
+          // 5. Frozen Air Bubble Inclusions & Crystalline Cavities
+          vec2 bubbleGrid = vCustomWorldPos.xz * (uLakeCrackScale * 3.2);
+          vec2 bId = floor(bubbleGrid);
+          vec2 bFract = fract(bubbleGrid);
+          vec2 bRnd = hash2(bId);
+          float bubbleDist = length(bFract - (vec2(0.5) + bRnd * 0.35));
+          float bubble = smoothstep(0.18, 0.05, bubbleDist) * smoothstep(0.0, 0.04, bubbleDist);
+          float bubbleGlint = smoothstep(0.06, 0.0, bubbleDist) * 0.60;
+          float totalBubbles = (bubble * 0.55 + bubbleGlint) * (0.30 + 0.70 * lakeDepth);
+
+          // 6. Organic Stress Mask (Natural variation in fracture intensity across the lake)
+          float stressNoise = sin(vCustomWorldPos.x * 0.08 + sin(vCustomWorldPos.z * 0.09) * 2.2) * cos(vCustomWorldPos.z * 0.07);
           float breakMask1 = smoothstep(-0.5, 0.6, stressNoise);
           float breakMask2 = smoothstep(-0.4, 0.5, -stressNoise);
 
-          // 5. Seamless Noise Texture Alpha Mask (Selectively overlays cracks only on natural portions of the lake with smooth fade-out)
+          // 7. Seamless Noise Texture Alpha Mask (Selectively overlays cracks only on natural portions of the lake with smooth fade-out)
           vec2 noiseUV1 = vCustomWorldPos.xz * uLakeNoiseScale;
           vec2 noiseUV2 = rotateUV(vCustomWorldPos.xz * (uLakeNoiseScale * 2.13), 0.785) + vec2(19.3, 47.1);
 
@@ -628,14 +644,16 @@ export class TerrainMaterialFactory {
 
           // Smooth alpha transition: portions of lake (< uLakeNoiseThreshold) have ZERO cracks (glassy mirror ice)
           // while portions (> uLakeNoiseThreshold) smoothly fade in organic fracture fields
-          float crackAlpha = smoothstep(uLakeNoiseThreshold, uLakeNoiseThreshold + 0.24, lakeNoise);
+          float crackAlpha = smoothstep(uLakeNoiseThreshold, uLakeNoiseThreshold + 0.22, lakeNoise);
 
-          // Fine hairlines fade out earliest near edges, leaving only deeper fractures dying out into glassy ice
-          float fineAlpha = smoothstep(uLakeNoiseThreshold + 0.10, uLakeNoiseThreshold + 0.34, lakeNoise);
+          // Fine hairlines fade out gracefully near edges, leaving only deeper fractures dying out into glassy ice
+          float fineAlpha = smoothstep(uLakeNoiseThreshold + 0.08, uLakeNoiseThreshold + 0.30, lakeNoise);
 
-          float totalCracks = (core1 * 1.4 + frostGlow1) * (0.55 + 0.45 * breakMask1)
+          float totalCracks = (core1 * 1.35 + frostGlow1) * (0.55 + 0.45 * breakMask1)
                             + core2 * breakMask2 * fineAlpha
-                            + coreDeep * (0.4 + 0.6 * lakeDepth);
+                            + coreDeep * (0.40 + 0.60 * lakeDepth)
+                            + coreNano * fineAlpha * 0.85
+                            + totalBubbles * 0.45 * crackAlpha;
 
           // Depth color blend
           vec3 baseIce = mix(uLakeBrightColor, uLakeMidColor, smoothstep(0.15, 0.60, lakeDepth));
@@ -724,12 +742,15 @@ export class TerrainMaterialFactory {
           normal = viewSnowN;
         }
 
-        // On lake ice: align normal to horizontal view-space vertical with subtle micro-frost ripples
+        // On lake ice: align normal to horizontal view-space vertical with multi-scale frozen flow ripples & micro-striations
         if (g_lakeFactor > 0.05) {
-          vec2 rippleUV = vCustomWorldPos.xz * 0.35;
-          float rip1 = sin(rippleUV.x * 2.5 + rippleUV.y * 1.8);
-          float rip2 = cos(rippleUV.x * 1.2 - rippleUV.y * 2.8);
-          vec2 icePerturb = vec2(rip1, rip2) * uLakeNormalRipples;
+          vec2 rippleUV1 = vCustomWorldPos.xz * 0.85;
+          vec2 rippleUV2 = rotateUV(vCustomWorldPos.xz * 2.4, 0.95) + vec2(13.4, 27.8);
+          vec2 rippleUV3 = rotateUV(vCustomWorldPos.xz * 6.2, -0.65);
+          float rip1 = sin(rippleUV1.x * 2.5 + rippleUV1.y * 1.8);
+          float rip2 = cos(rippleUV2.x * 1.6 - rippleUV2.y * 2.4) * 0.60;
+          float rip3 = sin(rippleUV3.x * 3.2 + rippleUV3.y * 2.1) * 0.35;
+          vec2 icePerturb = vec2(rip1 + rip2, rip2 + rip3) * uLakeNormalRipples;
           vec3 worldIceN = normalize(vec3(icePerturb.x, 1.0, icePerturb.y));
           vec3 viewIceN = normalize((viewMatrix * vec4(worldIceN, 0.0)).xyz);
           float iceNormBlend = smoothstep(0.12, 0.50, g_lakeFactor);

@@ -36,15 +36,15 @@ const scene = new THREE.Scene();
 
 // Atmosphere / Horizon Fog to blend distant mountain peaks into the skybox
 const fogColor = new THREE.Color(0xc6cdd5);
-scene.fog = new THREE.Fog(fogColor, 125, 450);
+scene.fog = new THREE.Fog(fogColor, 200, 850);
 
 // --- Dual-Camera Setup ---
 // Camera 2: World Camera (renders terrain, mountains, trees, skybox, snow spray, and scenery)
 const worldCamera = new THREE.PerspectiveCamera(
   65,
   window.innerWidth / window.innerHeight,
-  0.1,
-  1500
+  0.5,
+  2500
 );
 worldCamera.layers.set(0);
 
@@ -95,10 +95,10 @@ sunLight.shadow.camera.layers.enable(1);
 sunLight.shadow.mapSize.width = 1024;
 sunLight.shadow.mapSize.height = 1024;
 sunLight.shadow.camera.near = 15;
-sunLight.shadow.camera.far = 450;
+sunLight.shadow.camera.far = 650;
 
 // Optimized shadow frustum: forward-biased along skier view direction
-const shadowCoverage = 52;
+const shadowCoverage = 58;
 sunLight.shadow.camera.left = -shadowCoverage;
 sunLight.shadow.camera.right = shadowCoverage;
 sunLight.shadow.camera.top = shadowCoverage;
@@ -142,16 +142,16 @@ const skyboxPromise = new Promise((resolve) => {
 
 // --- Modular Procedural Terrain System with Mountains and Rock Texturing ---
 const terrainManager = new TerrainManager(scene, {
-  chunkSize: 96,         // World units per chunk (expanded for vast alpine scale)
-  chunkSegments: 18,     // Uniform lightweight resolution across all chunks (guarantees zero T-junction cracks)
-  renderDistance: 4,     // 384m view distance matching fog
-  treeGridStep: 14.0,    // Wider natural tree spacing (14m vs 10.5m)
-  treeDensity: 0.45,     // Reduced tree spawn density multiplier (0.45 vs 0.65)
-  treeShadowRange: 36,   // Optimized shadow range: only trees around the player within 36m cast shadows
-  maxBuildsPerFrame: 1,  // Strict 1-chunk build cap per frame with 4ms time budget
+  chunkSize: 128,        // Expanded chunk size for vast alpine terrain scale (was 96)
+  chunkSegments: 22,     // High-fidelity uniform mesh resolution (guarantees zero T-junction cracks)
+  renderDistance: 6,     // 768m view distance matching expanded atmosphere fog
+  treeGridStep: 15.0,    // Natural organic conifer spacing across expansive slopes
+  treeDensity: 0.42,     // Balanced organic tree density
+  treeShadowRange: 48,   // Proximity shadow range for real-time conifer shadows
+  maxBuildsPerFrame: 1,  // Smooth 60fps chunk streaming
   seed: Math.random() * 10000, // Randomized terrain generation seed
   treeModel: '/models/trees_pack.fbx', // Populate world with coniferous trees pack
-  renderer,              // WebGLRenderer for offscreen impostor baking & GPU features
+  renderer,              // WebGLRenderer for offscreen GPU features
 });
 
 // --- Player Controller (First-Person FPS Skater & Snowboard System) ---

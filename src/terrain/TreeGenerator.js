@@ -348,7 +348,16 @@ export class TreeGenerator {
     const env = environment || this.scene?.environment || null;
 
     try {
-      const baker = new TreeImpostorBaker(this.renderer, { environment: env });
+      const baker = new TreeImpostorBaker(this.renderer, {
+        environment: env,
+        sunPosition: new THREE.Vector3(130, 190, 90),
+        sunColor: 0xfff5e6,
+        sunIntensity: 2.1,
+        ambientColor: 0xd6e5f7,
+        ambientIntensity: 0.22,
+        groundBounceColor: 0xf2f5f9,
+        groundBounceIntensity: 0.35,
+      });
       this.impostors = baker.bake(this.loadedModels, env);
       for (const m of this.loadedModels) {
         m.impostor = this.impostors.get(m.name) || null;
@@ -655,12 +664,10 @@ export class TreeGenerator {
 
   /**
    * Generates environment instances for a terrain chunk.
-   * Produces both:
-   * - mesh3D: Full high-poly 3D models for near LOD (< 75m)
-   * - meshImpostor: 4-triangle cross-quad billboard impostors with baked scene lighting for distant LOD (> 75m)
+   * Produces full high-poly 3D models for all trees (billboard impostor LOD removed).
    * @param {number} chunkX
    * @param {number} chunkZ
-   * @returns {{ mesh3D: THREE.InstancedMesh|THREE.Group|null, meshImpostor: THREE.InstancedMesh|THREE.Group|null }}
+   * @returns {{ mesh3D: THREE.InstancedMesh|THREE.Group|null, meshImpostor: null, treeColliders: Array }}
    */
   generateChunkTrees(chunkX, chunkZ) {
     if (!this.isLoaded || !this.heightmap || this.loadedModels.length === 0) {
@@ -698,7 +705,7 @@ export class TreeGenerator {
 
         // Keep frozen lake ice and shorelines clear of trees (strict zero-tree margin)
         if (this.heightmap.isNearLake) {
-          if (this.heightmap.isNearLake(wx, wz, 10.0)) continue;
+          if (this.heightmap.isNearLake(wx, wz, 14.0)) continue;
         } else if (this.heightmap.getLakeData) {
           const lake = this.heightmap.getLakeData(wx, wz);
           if (lake.factor > 0.001) continue;
@@ -706,7 +713,7 @@ export class TreeGenerator {
 
         // 2. Elevation bounds: trees do not grow on high glacial peaks or submerged valleys
         const wy = this.heightmap.getHeight(wx, wz);
-        if (wy > 175.0 || wy < -28.0) continue;
+        if (wy > 220.0 || wy < -35.0) continue;
 
         // 3. Slope normal gating: trees cannot grow on steep rock cliffs
         const norm = this.heightmap.getNormal(wx, wz);
@@ -730,7 +737,7 @@ export class TreeGenerator {
         // 5. Timberline & Snag selection
         // Dried trees (snags) are natural alpine accents: balanced at ~8% in valleys and ski slopes,
         // increasing to ~15%-20% near harsh timberline ridges and rocky cirques (~10% overall)
-        const timberline = 120.0 - wCirque * 35.0;
+        const timberline = 145.0 - wCirque * 40.0;
         const snagHash = this._hash(chunkX, chunkZ, gx * 17, gz * 19);
         const snagProbability = wy > timberline ? (0.14 + wCirque * 0.08) : 0.08;
         const isSnag = this.activeSnags.length > 0 && snagHash < snagProbability;
@@ -775,7 +782,7 @@ export class TreeGenerator {
     for (const [modelData, instances] of instancesByModel.entries()) {
       if (instances.length === 0) continue;
 
-      // Full 3D instanced mesh
+      // Full 3D instanced mesh (for near & mid-distance)
       const instMesh3D = new THREE.InstancedMesh(
         modelData.geometry,
         modelData.materials,
@@ -784,7 +791,7 @@ export class TreeGenerator {
       instMesh3D.userData.instances = instances;
       instMesh3D.userData.modelName = modelData.name;
 
-      // 4-triangle cross-quad impostor instanced mesh (if baked)
+      // 4-triangle cross-quad impostor instanced mesh (for far-away trees only)
       let instMeshImp = null;
       if (modelData.impostor) {
         instMeshImp = new THREE.InstancedMesh(
@@ -792,7 +799,6 @@ export class TreeGenerator {
           modelData.impostor.material,
           instances.length
         );
-        instMeshImp.customDepthMaterial = modelData.impostor.depthMaterial;
         instMeshImp.userData.instances = instances;
         instMeshImp.userData.modelName = modelData.name;
       }
@@ -900,8 +906,7 @@ export class TreeGenerator {
 
   /**
    * Fast in-place matrix update of tree instances across all loaded chunks without disposing or recreating geometries.
-   * Updates BOTH 3D and 2D billboard impostors synchronously so they remain in exact lockstep.
-   * Runs in < 0.2ms, enabling 60 FPS real-time transforms while dragging sliders.
+   * Updates 3D tree instances synchronously in < 0.2ms, enabling 60 FPS real-time transforms while dragging sliders.
    * @param {string} [targetVariant] - Optional tree variant name to restrict update to, or null for all.
    * @param {Iterable<TerrainChunk>} chunks - Active chunks to update.
    */
