@@ -6,6 +6,7 @@ import { PlayerController } from './player/PlayerController.js';
 import { FpsCounter } from './perf/FpsCounter.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
+import { WireframeToggleUI } from './ui/WireframeToggleUI.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -171,7 +172,7 @@ const cloudSystem = new CloudSystem(scene, {
 });
 
 // Expose handle for runtime telemetry and debugging
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, wireframeUI: null };
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
@@ -218,6 +219,17 @@ loadingOverlay.onPlay(() => {
 
 // --- High-Performance FPS & Telemetry Counter (Top Left) ---
 const fpsCounter = new FpsCounter();
+
+// --- Wireframe / Solid Rendering Toggle UI Button (Top Right HUD) ---
+const wireframeUI = new WireframeToggleUI({
+  scene,
+  player,
+  terrainManager,
+  cloudSystem,
+});
+
+// Expose handle for runtime telemetry and debugging
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, wireframeUI };
 
 // --- Window Resize Listener ---
 window.addEventListener('resize', () => {
