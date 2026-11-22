@@ -5,23 +5,25 @@ import * as THREE from 'three';
  * High-performance, volumetric alpine cloud particle system using position-anchored world billboards.
  *
  * Visual & Technical Highlights:
- * 1. World-Position-Anchored Facing (Eliminates Obvious Billboard Rotation):
- *    - Billboards are oriented to face the camera's 3D position in world space with vertical axis locked to World Up.
- *    - Rotating, panning, or tilting the camera produces ZERO quad rotation in world space.
- *    - Clouds remain completely stationary and anchored against the mountains without any "swivel to face camera" artifact.
- * 2. Multi-Texture Silhouette Variation:
- *    - Uses both original cloud texture (/textures/cloud.png) and new isolated fluffy cumulus (/textures/cloud2.png).
- *    - Dynamically distributes textures across clusters for diverse, natural cloud silhouettes.
- * 3. High Optical Density & Reduced Transparency:
- *    - Puffs have substantial opacity (0.55-0.92) with boosted alpha curve so clouds are crisp, solid, fluffy, and prominent.
- * 4. Pure White & Soft Light-Gray Shading (Zero Dark Clouds):
+ * 1. Seamless Smooth Fade-In/Out (100% Zero Pop-In):
+ *    - Toroidal Domain Perimeter Fade: Particles smoothly dissolve to 0.0 opacity between 60% and 92% of the wrap radius.
+ *      When wrapping on the opposite horizon, particles are 100% invisible (alpha 0.0) and fade in smoothly as they approach.
+ *    - Distance Horizon Fade: Clouds smoothly melt into the horizon fog and sky without any sudden clipping.
+ *    - Smooth Intro Fade: Softly fades all clouds in on startup.
+ * 2. Multi-Texture Silhouette Variation (3 Distinct Cloud Types):
+ *    - Texture 1 (/textures/cloud.png): Wide multi-lobed alpine cumulus.
+ *    - Texture 2 (/textures/cloud2.png): Isolated towering fluffy cumulus dome (from user upload).
+ *    - Texture 3 (/textures/cloud3.png): Volumetric ethereal billowy cloud volume.
+ *    - Dynamically mixed across 36 clusters for rich, organic sky variety.
+ * 3. Position-Anchored World Billboarding (No Camera-Turn Swivel):
+ *    - Faces camera's 3D position in world space with vertical axis locked to World Up.
+ *    - Turning, panning, or tilting the camera produces ZERO quad rotation in world space.
+ * 4. High Optical Density & Reduced Transparency:
+ *    - Substantial opacity (0.55-0.92) with boosted alpha response curve ensures clouds are solid, crisp, and fluffy.
+ * 5. Pure White & Soft Light-Gray Shading (Zero Dark Clouds):
  *    - Texture luminance is remapped so clouds are bright fluffy white with at most a delicate light-gray tint.
- *    - Radiant sunlight and alpine sky ambient prevent any dark or stormy appearance.
- * 5. Multi-Particle 3D Volume Clusters:
+ * 6. Multi-Particle 3D Volume Clusters:
  *    - 36 clusters each containing 24 overlapping billboard particles distributed in 3D ellipsoids (864 particles in 1 draw call).
- * 6. Toroidal Infinite Wrapping: Seamlessly wraps around player position beyond the fog horizon.
- * 7. Near-Plane Soft Fade: Dissolves softly when flying or skiing through clouds (no geometric clipping).
- * 8. Atmospheric Fog Integration: Melts distant clouds into the mountain horizon fog.
  */
 export class CloudSystem {
   /**
@@ -40,6 +42,7 @@ export class CloudSystem {
 
     this.texturePath1 = options.texturePath1 || '/textures/cloud.png';
     this.texturePath2 = options.texturePath2 || '/textures/cloud2.png';
+    this.texturePath3 = options.texturePath3 || '/textures/cloud3.png';
 
     // Pure White & Light-Gray Shading (strictly avoiding dark clouds)
     this.sunDirection = options.sunDirection || new THREE.Vector3(130, 190, 90).normalize();
@@ -85,6 +88,15 @@ export class CloudSystem {
     this.cloudTexture2.wrapS = THREE.ClampToEdgeWrapping;
     this.cloudTexture2.wrapT = THREE.ClampToEdgeWrapping;
 
+    // Texture 3: Volumetric billowy cloud volume
+    this.cloudTexture3 = textureLoader.load(this.texturePath3);
+    this.cloudTexture3.colorSpace = THREE.SRGBColorSpace;
+    this.cloudTexture3.generateMipmaps = true;
+    this.cloudTexture3.minFilter = THREE.LinearMipmapLinearFilter;
+    this.cloudTexture3.magFilter = THREE.LinearFilter;
+    this.cloudTexture3.wrapS = THREE.ClampToEdgeWrapping;
+    this.cloudTexture3.wrapT = THREE.ClampToEdgeWrapping;
+
     this._initMaterial();
     this._initGeometry();
 
@@ -101,8 +113,8 @@ export class CloudSystem {
   }
 
   /**
-   * Custom GLSL shader with position-anchored world billboarding (no camera-rotation swivel),
-   * multi-texture blending, pure white tone remapping, and near-plane fade.
+   * Custom GLSL shader with position-anchored world billboarding,
+   * smooth toroidal perimeter fade-in/out, multi-texture blending, and pure white tone remapping.
    * @private
    */
   _initMaterial() {
@@ -110,6 +122,7 @@ export class CloudSystem {
       uniforms: {
         uCloudTexture1: { value: this.cloudTexture1 },
         uCloudTexture2: { value: this.cloudTexture2 },
+        uCloudTexture3: { value: this.cloudTexture3 },
         uTime: { value: 0.0 },
         uWind: { value: this.windSpeed },
         uPlayerPos: { value: this._playerPos },
@@ -138,6 +151,8 @@ export class CloudSystem {
         varying float vTextureType;
         varying vec3 vWorldPos;
         varying float vDistToCamera;
+        varying float vDomainFade;
+        varying float vNearFade;
 
         uniform float uTime;
         uniform vec3 uWind;
@@ -163,7 +178,14 @@ export class CloudSystem {
           pos.x = mod(pos.x - uPlayerPos.x + uWrapRadius, domain) - uWrapRadius + uPlayerPos.x;
           pos.z = mod(pos.z - uPlayerPos.z + uWrapRadius, domain) - uWrapRadius + uPlayerPos.z;
 
-          // 3. Position-Anchored World Billboard (Eliminates the obvious camera-facing swivel!)
+          // 3. Smooth Toroidal Domain Fade-In / Fade-Out (Eliminates ALL pop-in/pop-out)
+          // Starts fading at 60% of wrap radius (~810m), reaches exactly 0.0 at 92% (~1240m).
+          // Wrapped particles arrive at 0.0 opacity and fade in smoothly as they approach the player!
+          float distFromPlayerXZ = length(pos.xz - uPlayerPos.xz);
+          float domainFade = 1.0 - smoothstep(uWrapRadius * 0.60, uWrapRadius * 0.92, distFromPlayerXZ);
+          vDomainFade = domainFade;
+
+          // 4. Position-Anchored World Billboard (Eliminates the obvious camera-facing swivel!)
           // The billboard faces the camera's position in 3D world space, but does NOT rotate
           // when the camera turns yaw or pitch. Turning the camera causes ZERO quad rotation!
           vec3 toCamera = cameraPosition - pos;
@@ -196,6 +218,9 @@ export class CloudSystem {
           vec3 worldPos = pos + quadOffset;
           vWorldPos = worldPos;
 
+          // Near-plane soft fade (smoothly dissolves when player flies/skis through clouds)
+          vNearFade = smoothstep(14.0, 50.0, distToCam);
+
           // Standard transformation into view and clip space:
           gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
         }
@@ -203,6 +228,8 @@ export class CloudSystem {
       fragmentShader: `
         uniform sampler2D uCloudTexture1;
         uniform sampler2D uCloudTexture2;
+        uniform sampler2D uCloudTexture3;
+        uniform float uTime;
         uniform vec3 uSunDirection;
         uniform vec3 uSunColor;
         uniform vec3 uSkyColor;
@@ -217,12 +244,19 @@ export class CloudSystem {
         varying float vTextureType;
         varying vec3 vWorldPos;
         varying float vDistToCamera;
+        varying float vDomainFade;
+        varying float vNearFade;
 
         void main() {
           // Select texture based on per-particle variation
-          vec4 tex1 = texture2D(uCloudTexture1, vUv);
-          vec4 tex2 = texture2D(uCloudTexture2, vUv);
-          vec4 tex = (vTextureType < 0.5) ? tex1 : tex2;
+          vec4 tex;
+          if (vTextureType < 0.6) {
+            tex = texture2D(uCloudTexture1, vUv);
+          } else if (vTextureType < 1.6) {
+            tex = texture2D(uCloudTexture2, vUv);
+          } else {
+            tex = texture2D(uCloudTexture3, vUv);
+          }
 
           if (tex.a < 0.005) discard;
 
@@ -246,17 +280,23 @@ export class CloudSystem {
 
           vec3 finalColor = litTone * cloudWhiteness + silverLining;
 
-          // 4. Near-Plane Soft Fade (smoothly dissolves when player flies/skis through clouds)
-          float nearFade = smoothstep(14.0, 50.0, vDistToCamera);
-
-          // 5. Atmospheric Fog Blend (melts distant clouds seamlessly into horizon mountain fog)
+          // 4. Atmospheric Fog Color Blend (melts distant clouds into horizon mountain fog)
           float fogFactor = smoothstep(uFogNear, uFogFar, vDistToCamera);
           finalColor = mix(finalColor, uFogColor, fogFactor * 0.70);
 
-          // 6. Dense, Prominently Visible Opacity (Lil less transparent)
+          // 5. Seamless Multi-Stage Alpha Fading (Zero Pop-In):
+          // - vNearFade: dissolves smoothly near the camera (no clipping)
+          // - vDomainFade: dissolves to 0.0 at wrap boundary (no border pop-in)
+          // - horizonFade: dissolves smoothly into distant mountain fog
+          // - introFade: smooth fade-in on startup
+          float horizonFade = 1.0 - smoothstep(uFogNear + 100.0, uFogFar + 120.0, vDistToCamera);
+          float introFade = smoothstep(0.0, 1.5, uTime);
+
+          float totalFade = vNearFade * vDomainFade * horizonFade * introFade;
+
           // Boosted alpha curve ensures clouds are solid, crisp, and fluffy in the sky
           float boostedAlpha = pow(tex.a, 0.82);
-          float alpha = boostedAlpha * vOpacity * nearFade * (1.0 - fogFactor * 0.30);
+          float alpha = boostedAlpha * vOpacity * totalFade;
 
           gl_FragColor = vec4(finalColor, alpha);
         }
@@ -270,7 +310,7 @@ export class CloudSystem {
   }
 
   /**
-   * Generates organic cloud clusters with layered altitude distribution and dual-texture variation.
+   * Generates organic cloud clusters with layered altitude distribution and 3-texture variation.
    * Clusters contain overlapping position-anchored particles with high opacity
    * forming dense, volumetric, prominently visible cloud masses.
    * @private
@@ -312,7 +352,7 @@ export class CloudSystem {
       let clusterRadiusY = 50.0;
       let minScale = 150.0;
       let maxScale = 270.0;
-      let baseOpacity = 0.74; // High optical density so clouds are prominently visible
+      let baseOpacity = 0.76; // High optical density so clouds are prominently visible
 
       const layerRoll = rnd();
       if (layerRoll < 0.28) {
@@ -323,7 +363,7 @@ export class CloudSystem {
         clusterRadiusY = 30.0;
         minScale = 95.0;
         maxScale = 175.0;
-        baseOpacity = 0.60;
+        baseOpacity = 0.62;
       } else if (layerRoll < 0.78) {
         // Mid Majestic Cumulus Formations (Y ~220-370m)
         layerType = 1;
@@ -332,7 +372,7 @@ export class CloudSystem {
         clusterRadiusY = 55.0;
         minScale = 160.0;
         maxScale = 290.0;
-        baseOpacity = 0.76;
+        baseOpacity = 0.78;
       } else {
         // High Atmospheric Cloud Ceiling (Y ~460-630m)
         layerType = 2;
@@ -341,7 +381,7 @@ export class CloudSystem {
         clusterRadiusY = 40.0;
         minScale = 250.0;
         maxScale = 420.0;
-        baseOpacity = 0.68;
+        baseOpacity = 0.70;
       }
 
       // Distribute cluster centers across the wrap domain
@@ -350,8 +390,12 @@ export class CloudSystem {
       const clusterX = Math.cos(angle) * dist;
       const clusterZ = Math.sin(angle) * dist;
 
-      // Primary texture theme for this cluster (with occasional mixed sub-puffs)
-      const clusterTextureTheme = rnd() > 0.45 ? 1.0 : 0.0;
+      // Primary texture theme for this cluster:
+      // ~38% Texture 2 (Isolated fluffy cumulus dome)
+      // ~38% Texture 1 (Wide alpine cumulus)
+      // ~24% Texture 3 (Ethereal billowy volume)
+      const themeRoll = rnd();
+      const clusterTextureTheme = (themeRoll < 0.38) ? 1.0 : ((themeRoll < 0.76) ? 0.0 : 2.0);
 
       // Populate cluster with overlapping position-anchored billboard particles
       for (let p = 0; p < this.particlesPerCluster; p++) {
@@ -366,12 +410,13 @@ export class CloudSystem {
         positions[i * 3 + 1] = clusterBaseY + offsetY;
         positions[i * 3 + 2] = clusterZ + Math.sin(offsetAngle) * offsetDist;
 
-        // Texture assignment: predominantly cluster theme, with natural sub-puff variation
-        textureTypes[i] = (rnd() > 0.25) ? clusterTextureTheme : (1.0 - clusterTextureTheme);
+        // Texture assignment: predominantly cluster theme, with organic sub-puff variety
+        const texType = (rnd() > 0.25) ? clusterTextureTheme : Math.floor(rnd() * 3.0);
+        textureTypes[i] = texType;
 
-        // Scale: Cloud texture aspect ratio is ~1.54:1 (width > height)
+        // Scale: Textures 1 & 2 have ~1.54:1 aspect ratio; Texture 3 is ~1:1
         const baseScale = minScale + rnd() * (maxScale - minScale);
-        const aspect = 1.35 + rnd() * 0.35;
+        const aspect = (texType === 2.0) ? (1.0 + rnd() * 0.25) : (1.35 + rnd() * 0.35);
         // 50% chance of horizontal flip for 2x visual variety
         const flipX = rnd() > 0.5 ? 1.0 : -1.0;
         scales[i * 2 + 0] = baseScale * aspect * flipX;
@@ -380,10 +425,10 @@ export class CloudSystem {
         // Subtle billboard rotation angle (-20 deg to +20 deg for natural puff orientation)
         rotations[i] = (rnd() - 0.5) * 0.40;
 
-        // Dense opacity: core particles reach 0.78-0.92, outer wisps reach 0.45-0.62
+        // Dense opacity: core particles reach 0.80-0.92, outer wisps reach 0.48-0.65
         const distNorm = offsetDist / clusterRadiusXZ;
         const coreFactor = Math.max(0.55, 1.0 - distNorm * 0.45);
-        opacities[i] = Math.max(0.42, Math.min(0.92, baseOpacity * coreFactor * (0.90 + rnd() * 0.25)));
+        opacities[i] = Math.max(0.45, Math.min(0.92, baseOpacity * coreFactor * (0.90 + rnd() * 0.25)));
 
         layers[i] = layerType;
         phases[i] = rnd() * Math.PI * 2.0;
@@ -446,6 +491,9 @@ export class CloudSystem {
     }
     if (this.cloudTexture2) {
       this.cloudTexture2.dispose();
+    }
+    if (this.cloudTexture3) {
+      this.cloudTexture3.dispose();
     }
   }
 }
