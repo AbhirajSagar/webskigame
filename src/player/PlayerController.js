@@ -152,9 +152,14 @@ export class PlayerController {
 
     this._initInput();
 
-    // Place initial rider at terrain elevation
+    // High-altitude drop-in entrance altitude (55m above summit peak)
+    this.initialDropHeight = 55.0;
+    this.isGrounded = false;
+    this.airTime = 0.5;
+
+    // Place initial rider high in the sky at drop-in elevation
     const startHeight = this.terrainManager.getHeightAt(0, 0);
-    this.position.set(0, startHeight, 0);
+    this.position.set(0, startHeight + this.initialDropHeight, 0);
     this.focusY = this.position.y + this.focusHeight;
 
     // Automatically align initial heading downhill along the starting slope
@@ -483,14 +488,18 @@ export class PlayerController {
 
   start() {
     this.isPlaying = true;
-    // Launch skier downhill along heading with authentic starting momentum (9 m/s = ~32 km/h)
+    this.isGrounded = false;
+    this.airTime = 0.5;
+
+    // Launch forward downhill with gentle starting trajectory into the high-altitude drop
     _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
     if (_scratchForwardXZ.lengthSq() < 0.001) {
       _scratchForwardXZ.set(0, 0, -1);
     }
-    const launchSpeed = 9.0;
+    const launchSpeed = 6.5;
     this.velocity.x = _scratchForwardXZ.x * launchSpeed;
     this.velocity.z = _scratchForwardXZ.z * launchSpeed;
+    this.velocity.y = -2.5; // Initial downward drop impulse
   }
 
   update(deltaTime) {
@@ -500,18 +509,19 @@ export class PlayerController {
     // Guard position & velocity from any numerical anomalies
     if (!Number.isFinite(this.position.x) || !Number.isFinite(this.position.y) || !Number.isFinite(this.position.z)) {
       const resetH = this.terrainManager.getHeightAt(0, 0);
-      this.position.set(0, resetH, 0);
+      this.position.set(0, resetH + this.initialDropHeight, 0);
       this.focusY = this.position.y + this.focusHeight;
     }
     if (!Number.isFinite(this.velocity.x) || !Number.isFinite(this.velocity.y) || !Number.isFinite(this.velocity.z)) {
       this.velocity.set(0, 0, 0);
     }
 
-    // Keep skier poised at summit starting gate until user clicks Play
+    // Keep skier poised in the sky at drop altitude until user clicks Play
     if (!this.isPlaying && this.mode === 'ski') {
       this.velocity.set(0, 0, 0);
       const groundH = this.terrainManager.getHeightAt(this.position.x, this.position.z);
-      this.position.y = groundH;
+      this.position.y = groundH + this.initialDropHeight;
+      this.isGrounded = false;
       this.focusY = this.position.y + this.focusHeight;
       if (this.character) {
         this.character.update(dt, this);
@@ -845,6 +855,8 @@ export class PlayerController {
         const normalSpeed = this.velocity.dot(landNormal);
         if (normalSpeed < 0) {
           this.velocity.addScaledVector(landNormal, -normalSpeed);
+          // Visceral camera landing impact compression (absorbs high drop shock)
+          this.trauma = Math.min(0.65, Math.abs(normalSpeed) * 0.022);
         }
       }
     }
