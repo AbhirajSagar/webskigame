@@ -143,63 +143,29 @@ export class GrindRailSystem {
   }
 
   _initMaterials() {
-    // Treated alpine timber material for utility poles
-    this.woodPoleMaterial = new THREE.MeshStandardMaterial({
-      color: 0x422f22,
-      roughness: 0.82,
-      metalness: 0.08,
+    // Clean minimal vertical cylinder pole material (matte dark titanium / slate)
+    this.poleMaterial = new THREE.MeshStandardMaterial({
+      color: 0x2a2e33,
+      roughness: 0.55,
+      metalness: 0.65,
     });
 
-    // Dark timber crossbeam
-    this.woodBeamMaterial = new THREE.MeshStandardMaterial({
-      color: 0x362419,
-      roughness: 0.85,
-      metalness: 0.05,
-    });
-
-    // White ceramic bell insulators
-    this.insulatorMaterial = new THREE.MeshStandardMaterial({
-      color: 0xdde4eb,
-      roughness: 0.28,
-      metalness: 0.15,
-    });
-
-    // Galvanized steel ski-lift tower pylon material
-    this.steelPylonMaterial = new THREE.MeshStandardMaterial({
-      color: 0x6e767d,
-      roughness: 0.40,
-      metalness: 0.75,
-    });
-
-    // Heavy tensioned steel wire cable
+    // Clean suspended wire cable material
     this.cableMaterial = new THREE.MeshStandardMaterial({
-      color: 0x181c20,
-      roughness: 0.25,
+      color: 0x16181b,
+      roughness: 0.28,
       metalness: 0.90,
-    });
-
-    // High-visibility aerial warning marker spheres on high spans
-    this.markerBallMaterial = new THREE.MeshStandardMaterial({
-      color: 0xff6600,
-      roughness: 0.35,
-      metalness: 0.20,
-    });
-
-    // Concrete base foundation footing
-    this.concreteMaterial = new THREE.MeshStandardMaterial({
-      color: 0x8a8a86,
-      roughness: 0.90,
-      metalness: 0.05,
     });
   }
 
   /**
    * Generates all lines of poles and suspended grindable wires down the mountain.
+   * All poles are sleek, minimal vertical cylinders.
    * @private
    */
   _buildAllLines() {
-    // 1. Line 1: "Summit Express Line" (Wooden utility poles, double wire right by summit drop)
-    this._createUtilityPoleLine({
+    // 1. Line 1: Summit Ridge Line (Minimal long vertical cylinders right by summit drop)
+    this._createPoleLine({
       lineId: 'summit_line',
       startZ: -15,
       endZ: -620,
@@ -207,62 +173,58 @@ export class GrindRailSystem {
       endX: -140,
       poleSpacing: 46.0,
       poleHeight: 4.8,
-      wireSag: 0.50,
-      wireRadius: 0.040,
-      hasDoubleWire: true,
-      wireSpacing: 1.6,
-      isParkLow: false,
+      poleRadius: 0.12,
+      wireSag: 0.45,
+      wireRadius: 0.038,
     });
 
-    // 2. Line 2: "Alpine Ski-Lift Line" (Heavy steel pylons, high-tension haul rope)
-    this._createLiftPylonLine({
-      lineId: 'lift_line',
+    // 2. Line 2: Alpine Descent Line (Long vertical cylinders running far down the mountain)
+    this._createPoleLine({
+      lineId: 'descent_line',
       startZ: -35,
       endZ: -1150,
       startX: -22,
       endX: -260,
-      pylonSpacing: 58.0,
-      pylonHeight: 5.6,
-      wireSag: 0.65,
-      wireRadius: 0.052,
+      poleSpacing: 55.0,
+      poleHeight: 5.6,
+      poleRadius: 0.14,
+      wireSag: 0.60,
+      wireRadius: 0.042,
     });
 
-    // 3. Line 3: "Terrain Park Low Rail Cable" (Low-slung 1.9m rail wire right down the central gully)
-    this._createUtilityPoleLine({
-      lineId: 'park_rail_line',
-      startZ: -80,
+    // 3. Line 3: Terrain Park Low Line (Minimal low vertical cylinders down the central gully)
+    this._createPoleLine({
+      lineId: 'park_line',
+      startZ: -75,
       endZ: -520,
       startX: -4,
       endX: -45,
       poleSpacing: 38.0,
       poleHeight: 2.1,
-      wireSag: 0.25,
-      wireRadius: 0.045,
-      hasDoubleWire: false,
-      isParkLow: true,
+      poleRadius: 0.10,
+      wireSag: 0.22,
+      wireRadius: 0.040,
     });
   }
 
   /**
-   * Creates a sequence of wooden utility poles with crossarms and strung wire cables.
+   * Creates a sequence of clean, minimal vertical cylinder poles with a suspended wire.
    * @private
    */
-  _createUtilityPoleLine(cfg) {
+  _createPoleLine(cfg) {
     const totalDistZ = cfg.startZ - cfg.endZ;
     const numPoles = Math.max(3, Math.round(totalDistZ / cfg.poleSpacing));
     const poles = [];
 
-    const poleGeo = new THREE.CylinderGeometry(0.14, 0.20, cfg.poleHeight, 8);
-    const crossGeo = new THREE.BoxGeometry(cfg.hasDoubleWire ? (cfg.wireSpacing + 0.6) : 1.2, 0.14, 0.14);
-    const insulatorGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.16, 6);
-    const footingGeo = new THREE.CylinderGeometry(0.28, 0.32, 0.45, 8);
+    // Clean, minimal long vertical cylinder
+    const poleGeo = new THREE.CylinderGeometry(cfg.poleRadius, cfg.poleRadius, cfg.poleHeight, 16);
 
     for (let i = 0; i < numPoles; i++) {
       const alpha = i / (numPoles - 1);
       const pz = THREE.MathUtils.lerp(cfg.startZ, cfg.endZ, alpha);
 
       // Meander slightly with the natural alpine ski valley
-      const valleyWarp = Math.sin(pz * 0.0035) * 18.0;
+      const valleyWarp = Math.sin(pz * 0.0035) * 16.0;
       const px = THREE.MathUtils.lerp(cfg.startX, cfg.endX, alpha) + valleyWarp;
 
       const groundY = this.terrainManager?.getHeightAt
@@ -271,175 +233,38 @@ export class GrindRailSystem {
 
       const poleTopY = groundY + cfg.poleHeight;
 
-      // Construct pole visual assembly
-      const poleMesh = new THREE.Mesh(poleGeo, this.woodPoleMaterial);
+      // Pure minimal vertical cylinder mesh
+      const poleMesh = new THREE.Mesh(poleGeo, this.poleMaterial);
       poleMesh.position.set(px, groundY + cfg.poleHeight * 0.5, pz);
       poleMesh.castShadow = true;
       poleMesh.receiveShadow = true;
       this.group.add(poleMesh);
 
-      const footMesh = new THREE.Mesh(footingGeo, this.concreteMaterial);
-      footMesh.position.set(px, groundY + 0.2, pz);
-      footMesh.receiveShadow = true;
-      this.group.add(footMesh);
-
-      // Register solid trunk obstacle collider (for player collision deflection)
+      // Solid cylindrical obstacle collider
       this.poleColliders.push({
         x: px,
         y: groundY,
         z: pz,
-        radius: 0.25,
+        radius: cfg.poleRadius + 0.06,
         height: cfg.poleHeight,
-      });
-
-      // Crossarm beam
-      const crossMesh = new THREE.Mesh(crossGeo, this.woodBeamMaterial);
-      crossMesh.position.set(px, poleTopY - 0.20, pz);
-      crossMesh.castShadow = true;
-      this.group.add(crossMesh);
-
-      // Insulators & wire anchor points
-      const wireAnchors = [];
-      if (cfg.hasDoubleWire) {
-        const halfSpan = cfg.wireSpacing * 0.5;
-        // Left insulator & anchor
-        const insLeft = new THREE.Mesh(insulatorGeo, this.insulatorMaterial);
-        insLeft.position.set(px - halfSpan, poleTopY - 0.10, pz);
-        this.group.add(insLeft);
-        wireAnchors.push(new THREE.Vector3(px - halfSpan, poleTopY - 0.02, pz));
-
-        // Right insulator & anchor
-        const insRight = new THREE.Mesh(insulatorGeo, this.insulatorMaterial);
-        insRight.position.set(px + halfSpan, poleTopY - 0.10, pz);
-        this.group.add(insRight);
-        wireAnchors.push(new THREE.Vector3(px + halfSpan, poleTopY - 0.02, pz));
-      } else {
-        const insCenter = new THREE.Mesh(insulatorGeo, this.insulatorMaterial);
-        insCenter.position.set(px, poleTopY - 0.10, pz);
-        this.group.add(insCenter);
-        wireAnchors.push(new THREE.Vector3(px, poleTopY - 0.02, pz));
-      }
-
-      poles.push({ px, groundY, poleTopY, pz, wireAnchors });
-    }
-
-    // Connect suspended wire segments between consecutive poles
-    const numWires = cfg.hasDoubleWire ? 2 : 1;
-    for (let w = 0; w < numWires; w++) {
-      let prevSeg = null;
-
-      for (let i = 0; i < poles.length - 1; i++) {
-        const startPt = poles[i].wireAnchors[w];
-        const endPt = poles[i + 1].wireAnchors[w];
-
-        const seg = new WireSegment(startPt, endPt, {
-          sag: cfg.wireSag,
-          radius: cfg.wireRadius,
-          lineId: `${cfg.lineId}_${w}`,
-          index: i,
-        });
-
-        if (prevSeg) {
-          prevSeg.nextSegment = seg;
-          seg.prevSegment = prevSeg;
-        }
-        prevSeg = seg;
-
-        this.wireSegments.push(seg);
-        this._buildWireMesh(seg);
-
-        // Aerial orange marker ball on longer mid-mountain spans
-        if (i % 3 === 1 && !cfg.isParkLow) {
-          const ballGeo = new THREE.SphereGeometry(0.28, 8, 6);
-          const ballMesh = new THREE.Mesh(ballGeo, this.markerBallMaterial);
-          seg.getPointAt(0.5, ballMesh.position);
-          ballMesh.castShadow = true;
-          this.group.add(ballMesh);
-        }
-      }
-    }
-  }
-
-  /**
-   * Creates a line of heavy steel ski-lift pylons with cable roller assemblies.
-   * @private
-   */
-  _createLiftPylonLine(cfg) {
-    const totalDistZ = cfg.startZ - cfg.endZ;
-    const numPylons = Math.max(3, Math.round(totalDistZ / cfg.pylonSpacing));
-    const pylons = [];
-
-    const pylonGeo = new THREE.CylinderGeometry(0.28, 0.42, cfg.pylonHeight, 10);
-    const crossTGeo = new THREE.BoxGeometry(3.6, 0.28, 0.28);
-    const rollerGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.35, 8);
-    const footingGeo = new THREE.CylinderGeometry(0.60, 0.70, 0.60, 8);
-
-    for (let i = 0; i < numPylons; i++) {
-      const alpha = i / (numPylons - 1);
-      const pz = THREE.MathUtils.lerp(cfg.startZ, cfg.endZ, alpha);
-      const px = THREE.MathUtils.lerp(cfg.startX, cfg.endX, alpha) + Math.sin(pz * 0.0028) * 14.0;
-
-      const groundY = this.terrainManager?.getHeightAt
-        ? this.terrainManager.getHeightAt(px, pz)
-        : 25.0;
-
-      const topY = groundY + cfg.pylonHeight;
-
-      // Steel pylon tube
-      const pylonMesh = new THREE.Mesh(pylonGeo, this.steelPylonMaterial);
-      pylonMesh.position.set(px, groundY + cfg.pylonHeight * 0.5, pz);
-      pylonMesh.castShadow = true;
-      pylonMesh.receiveShadow = true;
-      this.group.add(pylonMesh);
-
-      // Concrete footing
-      const footMesh = new THREE.Mesh(footingGeo, this.concreteMaterial);
-      footMesh.position.set(px, groundY + 0.3, pz);
-      footMesh.receiveShadow = true;
-      this.group.add(footMesh);
-
-      // Register solid obstacle collider
-      this.poleColliders.push({
-        x: px,
-        y: groundY,
-        z: pz,
-        radius: 0.45,
-        height: cfg.pylonHeight,
         foliageType: 'none',
       });
 
-      // Crossarm T-beam
-      const crossMesh = new THREE.Mesh(crossTGeo, this.steelPylonMaterial);
-      crossMesh.position.set(px, topY - 0.35, pz);
-      crossMesh.castShadow = true;
-      this.group.add(crossMesh);
-
-      // Cable roller assemblies (downhill track on right at x + 1.4, return track on left at x - 1.4)
-      const rollRight = new THREE.Mesh(rollerGeo, this.woodBeamMaterial);
-      rollRight.rotation.z = Math.PI * 0.5;
-      rollRight.position.set(px + 1.4, topY - 0.50, pz);
-      this.group.add(rollRight);
-
-      const rollLeft = new THREE.Mesh(rollerGeo, this.woodBeamMaterial);
-      rollLeft.rotation.z = Math.PI * 0.5;
-      rollLeft.position.set(px - 1.4, topY - 0.50, pz);
-      this.group.add(rollLeft);
-
-      // Downhill cable anchor point
-      const downhillAnchor = new THREE.Vector3(px + 1.4, topY - 0.42, pz);
-      pylons.push({ px, groundY, topY, pz, anchor: downhillAnchor });
+      // Suspended wire connects directly to the top of the cylinder
+      const wireAnchor = new THREE.Vector3(px, poleTopY, pz);
+      poles.push({ px, groundY, poleTopY, pz, wireAnchor });
     }
 
-    // Connect heavy steel lift cable between pylons
+    // Connect suspended wire segments between consecutive poles
     let prevSeg = null;
-    for (let i = 0; i < pylons.length - 1; i++) {
-      const startPt = pylons[i].anchor;
-      const endPt = pylons[i + 1].anchor;
+    for (let i = 0; i < poles.length - 1; i++) {
+      const startPt = poles[i].wireAnchor;
+      const endPt = poles[i + 1].wireAnchor;
 
       const seg = new WireSegment(startPt, endPt, {
         sag: cfg.wireSag,
         radius: cfg.wireRadius,
-        lineId: `${cfg.lineId}_downhill`,
+        lineId: `${cfg.lineId}_${i}`,
         index: i,
       });
 

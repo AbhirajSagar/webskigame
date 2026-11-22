@@ -73,6 +73,7 @@ export class CharacterModel {
     this.currentNormal = new THREE.Vector3(0, 1, 0);
     this.currentBankAngle = 0.0;
     this.currentBrakeAngle = 0.0;
+    this.currentGrindAngle = 0.0;
     this._initialized = false;
     this.scaleMultiplier = options.scaleMultiplier ?? 1.0;
     this.fallHeightThreshold = options.fallHeightThreshold ?? 1.0; // Height in meters above ground to trigger falling animation
@@ -508,9 +509,23 @@ export class CharacterModel {
       const dot = _scratchUp.dot(_scratchForward);
       _scratchUp.addScaledVector(_scratchForward, -dot).normalize();
       _scratchRight.crossVectors(_scratchUp, _scratchForward).normalize();
+
+      // Stylish angled grind posture: board is angled diagonally across the rail (~38° / 0.66 rad, NOT 90°)
+      const targetGrindAngle = player.grindAngle ?? 0.66;
+      this.currentGrindAngle = THREE.MathUtils.damp(
+        this.currentGrindAngle || 0.0,
+        targetGrindAngle,
+        14.0,
+        dt
+      );
+
+      _scratchForward.applyAxisAngle(_scratchUp, this.currentGrindAngle);
+      _scratchRight.applyAxisAngle(_scratchUp, this.currentGrindAngle);
+
       _scratchBasisMatrix.makeBasis(_scratchRight, _scratchUp, _scratchForward);
       this.group.quaternion.setFromRotationMatrix(_scratchBasisMatrix);
     } else {
+      this.currentGrindAngle = 0.0;
       // 2. Normal Alignment:
       // When grounded: align UP vector to terrain surface normal
       // When airborne: smoothly level out to world UP (0, 1, 0)

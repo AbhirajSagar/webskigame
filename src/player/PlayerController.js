@@ -122,6 +122,7 @@ export class PlayerController {
     this.currentWireSegment = null;
     this.grindParam = 0.0;
     this.grindSpeed = 0.0;
+    this.grindAngle = 0.66; // ~38° diagonal grind posture (not 90°)
     this.wireTangent = new THREE.Vector3(0, 0, -1);
     this.grindCooldown = 0.0;
 
