@@ -40,15 +40,13 @@ const scene = new THREE.Scene();
 const fogColor = new THREE.Color(0xc6cdd5);
 scene.fog = new THREE.Fog(fogColor, 200, 850);
 
-// 9:16 Vertical Portrait Aspect Ratio for Instagram Reels / TikTok
-const REELS_ASPECT = 9 / 16; // 0.5625
-const PORTRAIT_BASE_FOV = 100; // Calibrated for natural ~72° horizontal FOV in 9:16
+const BASE_FOV = 65;
 
 // --- Dual-Camera Setup ---
 // Camera 2: World Camera (renders terrain, mountains, trees, skybox, clouds, and scenery)
 const worldCamera = new THREE.PerspectiveCamera(
-  PORTRAIT_BASE_FOV,
-  REELS_ASPECT,
+  BASE_FOV,
+  window.innerWidth / window.innerHeight,
   0.5,
   2500
 );
@@ -56,8 +54,8 @@ worldCamera.layers.set(0);
 
 // Camera 1: Character & Snowboard Camera (renders on top of the world)
 const characterCamera = new THREE.PerspectiveCamera(
-  PORTRAIT_BASE_FOV,
-  REELS_ASPECT,
+  BASE_FOV,
+  window.innerWidth / window.innerHeight,
   0.05,
   100
 );
@@ -76,27 +74,18 @@ const renderer = new THREE.WebGLRenderer({
 });
 
 function resizeViewport() {
-  const winW = window.innerWidth;
-  const winH = window.innerHeight;
-  let targetW, targetH;
+  const width = window.innerWidth;
+  const height = window.innerHeight;
 
-  if (winW / winH > REELS_ASPECT) {
-    targetH = winH;
-    targetW = Math.round(targetH * REELS_ASPECT);
-  } else {
-    targetW = winW;
-    targetH = Math.round(targetW / REELS_ASPECT);
-  }
-
-  worldCamera.aspect = REELS_ASPECT;
+  worldCamera.aspect = width / height;
   worldCamera.updateProjectionMatrix();
 
-  characterCamera.aspect = REELS_ASPECT;
+  characterCamera.aspect = width / height;
   characterCamera.updateProjectionMatrix();
 
-  renderer.setSize(targetW, targetH);
-  // High-fidelity pixel ratio up to 2.0 for razor-sharp 1080x1920 video capture
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
+  renderer.setSize(width, height);
+  // Clamping pixel ratio to 1.5 balances crisp rendering and high fillrate performance
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 }
 
 resizeViewport();

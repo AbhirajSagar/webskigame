@@ -121,6 +121,7 @@ export class SpeedEffects {
     const fragmentShader = `
       uniform float uSpeedRatio;
       uniform float uTime;
+      uniform float uAspect;
       varying vec2 vUv;
 
       void main() {
@@ -129,9 +130,13 @@ export class SpeedEffects {
           return;
         }
 
-        // Center coordinates: [-0.5, 0.5], aspect-adjusted for 9:16 vertical view
+        // Center coordinates: [-0.5, 0.5], aspect-adjusted for dynamic full-screen or vertical view
         vec2 centered = vUv - 0.5;
-        centered.y *= (16.0 / 9.0);
+        if (uAspect > 1.0) {
+          centered.x *= uAspect;
+        } else {
+          centered.y /= uAspect;
+        }
         float dist = length(centered);
 
         // Radial tunnel vignette: transparent in center (r < 0.48), darkening at outer perimeter
@@ -155,6 +160,7 @@ export class SpeedEffects {
     this.vignetteUniforms = {
       uSpeedRatio: { value: 0.0 },
       uTime: { value: 0.0 },
+      uAspect: { value: window.innerWidth / window.innerHeight },
     };
 
     const material = new THREE.ShaderMaterial({
@@ -314,6 +320,7 @@ export class SpeedEffects {
     if (this.vignetteUniforms) {
       this.vignetteUniforms.uSpeedRatio.value = this.speedRatio;
       this.vignetteUniforms.uTime.value = elapsedTime;
+      this.vignetteUniforms.uAspect.value = this.camera?.aspect || (window.innerWidth / window.innerHeight);
     }
 
     // 3. Update Audio Wind Synth
@@ -345,7 +352,9 @@ export class SpeedEffects {
     // Streak elongation factor
     const lengthMultiplier = 1.0 + ratio * 2.8;
 
-    const aspectY = 16.0 / 9.0; // Aspect ratio height multiplier for 9:16 framing
+    const aspect = this.camera?.aspect || (window.innerWidth / window.innerHeight);
+    const scaleX = aspect > 1.0 ? Math.min(1.8, aspect * 0.9) : 1.0;
+    const scaleY = aspect > 1.0 ? 1.0 : Math.min(1.8, 1.0 / aspect);
 
     for (let i = 0; i < count; i++) {
       let z = this._streakDepths[i];
@@ -365,8 +374,8 @@ export class SpeedEffects {
 
       // Scale radial coordinates proportionally with distance so frustum coverage is uniform
       const depthScale = Math.abs(z) * 0.42;
-      const x1 = Math.cos(angle) * r * depthScale;
-      const y1 = Math.sin(angle) * r * depthScale * aspectY;
+      const x1 = Math.cos(angle) * r * depthScale * scaleX;
+      const y1 = Math.sin(angle) * r * depthScale * scaleY;
       const z1 = z;
 
       // Tail extends further back along Z
