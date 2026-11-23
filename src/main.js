@@ -6,6 +6,7 @@ import { PlayerController } from './player/PlayerController.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
 import { VideoRecorder } from './ui/VideoRecorder.js';
+import { SpeedEffects } from './fx/SpeedEffects.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -200,8 +201,8 @@ const cloudSystem = new CloudSystem(scene, {
   fogFar: 850,
 });
 
-// Expose handle for runtime telemetry and debugging
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, wireframeUI: null };
+// --- Speed Effects System (Peripheral Wind Streaks, Speed Vignette, Procedural Wind Audio) ---
+const speedEffects = new SpeedEffects(worldCamera, scene);
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
@@ -244,13 +245,14 @@ Promise.race([
 // Launch downhill ski run when user clicks Play button
 loadingOverlay.onPlay(() => {
   player.start();
+  speedEffects.start();
 });
 
 // --- Instagram Reels 60 FPS Video Recorder (Canvas capture, zero UI in video) ---
 const videoRecorder = new VideoRecorder(canvas, { fps: 60, bitrate: 16000000 });
 
 // Expose handle for runtime telemetry and debugging (clean recording mode, no HUD UI)
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, videoRecorder };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, videoRecorder, speedEffects };
 
 // --- Simulation & Render Loop ---
 const clock = new THREE.Clock();
@@ -271,6 +273,9 @@ function animate() {
 
   // 1. Update player physics, cameras, rider animations, and snow spray
   player.update(delta);
+
+  // 2. Update visual and audio speed effects (peripheral wind streaks, speed vignette, procedural audio)
+  speedEffects.update(delta, player.speed, player.velocity, player.isGrounded, elapsedTime);
 
   // Forward-biased sun shadow frustum: biases shadow coverage around rider
   worldCamera.getWorldDirection(forwardDir);

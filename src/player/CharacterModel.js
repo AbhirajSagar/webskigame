@@ -11,7 +11,7 @@ const _scratchSprayPos = new THREE.Vector3();
 const _scratchSprayVel = new THREE.Vector3();
 
 // Snow spray particle capacity
-const MAX_SPRAY_PARTICLES = 120;
+const MAX_SPRAY_PARTICLES = 240;
 
 // Transparent 1x1 PNG data URI used to safely intercept missing external author textures
 const DUMMY_PNG_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
@@ -635,14 +635,17 @@ export class CharacterModel {
     const isBoosting = this.currentState === 'boost';
 
     if (isGrounded && speed > 2.0 && player.isPlaying) {
-      const spawnCount = isCarving ? 3 : (isBoosting ? 3 : (speed > 15 ? 2 : 1));
+      const highSpeedRatio = Math.min(1.0, speed / 50.0);
+      const spawnCount = isCarving
+        ? (speed > 35 ? 6 : 4)
+        : (isBoosting ? 4 : (speed > 25 ? 3 : (speed > 14 ? 2 : 1)));
 
       _scratchSprayPos.set(0, 0.05, -0.85).applyMatrix4(this.group.matrixWorld);
 
       for (let s = 0; s < spawnCount; s++) {
-        const spreadX = (Math.random() - 0.5) * 0.6;
-        const spreadY = 0.8 + Math.random() * (isBoosting ? 1.6 : 1.2);
-        const spreadZ = -0.4 - Math.random() * (speed * 0.08);
+        const spreadX = (Math.random() - 0.5) * (0.6 + highSpeedRatio * 0.45);
+        const spreadY = 0.8 + Math.random() * (isBoosting ? 1.6 : 1.2) + highSpeedRatio * 0.9;
+        const spreadZ = -0.4 - Math.random() * (speed * 0.11);
 
         _scratchSprayVel.set(spreadX, spreadY, spreadZ).applyQuaternion(this.group.quaternion);
 
@@ -653,7 +656,7 @@ export class CharacterModel {
           _scratchSprayVel.x,
           _scratchSprayVel.y,
           _scratchSprayVel.z,
-          0.35 + Math.random() * 0.25
+          0.38 + Math.random() * (0.28 + highSpeedRatio * 0.25)
         );
       }
     }

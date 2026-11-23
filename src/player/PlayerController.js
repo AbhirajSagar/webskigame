@@ -115,13 +115,18 @@ export class PlayerController {
     this.treeCollisionRadius = 0.22;
     this._nearbyTrunks = [];
 
-    // Input state: strictly forward acceleration (W / ArrowUp)
+    // Input state: forward, carving, braking, and jumping
     this.keys = {
       forward: false,
+      backward: false,
+      left: false,
+      right: false,
+      jump: false,
     };
     this.keyboardForward = false;
     this.touchForward = false;
     this.steerBank = 0.0;
+    this.currentRoll = 0.0;
 
     // Camera input sensitivity
     this.mouseSensitivity = 0.0022;
@@ -313,6 +318,19 @@ export class PlayerController {
     if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') {
       this.keyboardForward = true;
       this.keys.forward = true;
+    } else if (e.code === 'KeyS' || e.code === 'ArrowDown' || e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') {
+      this.keys.backward = true;
+    } else if (e.code === 'KeyA' || e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+      this.keys.left = true;
+    } else if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+      this.keys.right = true;
+    } else if (e.code === 'Space' || e.key === ' ') {
+      this.keys.jump = true;
+      if (this.isGrounded && this.mode === 'ski') {
+        this.velocity.y = this.jumpForce;
+        this.isGrounded = false;
+        this.airTime = 0.05;
+      }
     }
   }
 
@@ -320,6 +338,14 @@ export class PlayerController {
     if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') {
       this.keyboardForward = false;
       this.keys.forward = this.touchForward;
+    } else if (e.code === 'KeyS' || e.code === 'ArrowDown' || e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') {
+      this.keys.backward = false;
+    } else if (e.code === 'KeyA' || e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+      this.keys.left = false;
+    } else if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+      this.keys.right = false;
+    } else if (e.code === 'Space' || e.key === ' ') {
+      this.keys.jump = false;
     }
   }
 
@@ -626,6 +652,15 @@ export class PlayerController {
       _scratchCamDesired.y += (Math.cos(t * 1.5) + Math.sin(t * 2.9) * 0.5) * 0.06 * shake;
     }
 
+    // Aerodynamic high-speed camera tremor (wind buffeting on helmet/goggles)
+    if (this.speed > 22.0) {
+      const speedExcess = Math.min(1.0, (this.speed - 22.0) / 42.0);
+      const buffetMag = speedExcess * speedExcess * 0.016;
+      const bt = performance.now() * 0.048;
+      _scratchCamDesired.x += Math.sin(bt * 1.3) * buffetMag;
+      _scratchCamDesired.y += Math.cos(bt * 1.7) * (buffetMag * 0.75);
+    }
+
     // 2. Head tracking stabilization:
     // Track the head bone position relative to the player ground position.
     // By smoothing the local head offset, the camera stays locked to the character's head
@@ -646,10 +681,12 @@ export class PlayerController {
     this.camera.position.copy(this.position).add(this._smoothedHeadOffset);
 
     // 3. Camera Rotation
-    // Yaw: turns left/right with mouse steering
+    // Yaw: turns left/right with mouse and keyboard carving
     // Pitch: tilts down/up (negative pitch tilts up, positive pitch tilts down)
-    // Roll: locked to 0 for a rock-solid, level horizon with zero wobble
-    _scratchCamEuler.set(-this.pitch, this.yaw, 0, 'YXZ');
+    // Roll: dynamic carving bank roll (leaning smoothly into turns with edge grip)
+    const targetRoll = this.steerBank ? this.steerBank * 0.28 : 0.0;
+    this.currentRoll = THREE.MathUtils.damp(this.currentRoll || 0, targetRoll, 7.5, dt);
+    _scratchCamEuler.set(-this.pitch, this.yaw, this.currentRoll, 'YXZ');
     this.camera.quaternion.setFromEuler(_scratchCamEuler);
 
     // Synchronize 1st camera (character & snowboard overlay camera)
@@ -673,10 +710,19 @@ export class PlayerController {
    * @private
    */
   _updateSkiPhysics(dt, forward, right) {
+    // Keyboard carving steering (A/D or Left/Right arrows)
+    if (this.keys.left) {
+      this.yaw += 1.85 * dt;
+    }
+    if (this.keys.right) {
+      this.yaw -= 1.85 * dt;
+    }
+
     _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
     _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
 
     const isAccelerating = this.keys.forward;
+    const isBraking = this.keys.backward;
 
     const currentGroundHeight = this.terrainManager.getHeightAt(this.position.x, this.position.z);
     const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z);
@@ -717,6 +763,9 @@ export class PlayerController {
         let frictionRate = isAccelerating ? this.snowFriction * 0.35 : this.snowFriction;
         if (isOnIce) {
           frictionRate *= 0.22;
+        }
+        if (isBraking) {
+          frictionRate += 1.85; // Active hockey-stop deceleration
         }
 
         const newSpeed = Math.max(0, postPushSpeed * (1.0 - frictionRate * dt));
