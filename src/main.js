@@ -5,7 +5,6 @@ import { TerrainManager } from './terrain/TerrainManager.js';
 import { PlayerController } from './player/PlayerController.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
-import { GrindRailSystem } from './environment/GrindRailSystem.js';
 import { VideoRecorder } from './ui/VideoRecorder.js';
 import './style.css';
 
@@ -189,10 +188,6 @@ const terrainManager = new TerrainManager(scene, {
 // --- Player Controller (First-Person FPS Skater & Snowboard System) ---
 const player = new PlayerController(worldCamera, canvas, terrainManager, scene, characterCamera);
 
-// --- Grind Rail & Suspended Wire System (Utility poles, ski-lift pylons, and park rails) ---
-const grindRailSystem = new GrindRailSystem(scene, terrainManager);
-player.setGrindSystem(grindRailSystem);
-
 // --- Alpine Volumetric Particle Cloud System ---
 const cloudSystem = new CloudSystem(scene, {
   clusterCount: 36,
@@ -255,7 +250,7 @@ loadingOverlay.onPlay(() => {
 const videoRecorder = new VideoRecorder(canvas, { fps: 60, bitrate: 16000000 });
 
 // Expose handle for runtime telemetry and debugging (clean recording mode, no HUD UI)
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, grindRailSystem, videoRecorder };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, videoRecorder };
 
 // --- Simulation & Render Loop ---
 const clock = new THREE.Clock();
@@ -276,9 +271,6 @@ function animate() {
 
   // 1. Update player physics, cameras, rider animations, and snow spray
   player.update(delta);
-
-  // Update poles, suspended wires, and grinding sparks
-  grindRailSystem.update(delta, player);
 
   // Forward-biased sun shadow frustum: biases shadow coverage around rider
   worldCamera.getWorldDirection(forwardDir);

@@ -73,7 +73,6 @@ export class CharacterModel {
     this.currentNormal = new THREE.Vector3(0, 1, 0);
     this.currentBankAngle = 0.0;
     this.currentBrakeAngle = 0.0;
-    this.currentGrindAngle = 0.0;
     this._initialized = false;
     this.scaleMultiplier = options.scaleMultiplier ?? 1.0;
     this.fallHeightThreshold = options.fallHeightThreshold ?? 1.0; // Height in meters above ground to trigger falling animation
@@ -503,96 +502,71 @@ export class CharacterModel {
     // 1. Rig Position: Locked to player's contact point
     this.group.position.copy(player.position);
 
-    if (player.isGrinding && player.wireTangent) {
-      _scratchForward.copy(player.wireTangent).normalize();
-      _scratchUp.set(0, 1, 0);
-      const dot = _scratchUp.dot(_scratchForward);
-      _scratchUp.addScaledVector(_scratchForward, -dot).normalize();
-      _scratchRight.crossVectors(_scratchUp, _scratchForward).normalize();
-
-      // Stylish angled grind posture: board is angled diagonally across the rail (~38° / 0.66 rad, NOT 90°)
-      const targetGrindAngle = player.grindAngle ?? 0.66;
-      this.currentGrindAngle = THREE.MathUtils.damp(
-        this.currentGrindAngle || 0.0,
-        targetGrindAngle,
-        14.0,
-        dt
-      );
-
-      _scratchForward.applyAxisAngle(_scratchUp, this.currentGrindAngle);
-      _scratchRight.applyAxisAngle(_scratchUp, this.currentGrindAngle);
-
-      _scratchBasisMatrix.makeBasis(_scratchRight, _scratchUp, _scratchForward);
-      this.group.quaternion.setFromRotationMatrix(_scratchBasisMatrix);
-    } else {
-      this.currentGrindAngle = 0.0;
-      // 2. Normal Alignment:
-      // When grounded: align UP vector to terrain surface normal
-      // When airborne: smoothly level out to world UP (0, 1, 0)
-      if (player.isGrounded) {
-        const rawNorm = this.terrainManager?.getNormalAt(player.position.x, player.position.z) || { x: 0, y: 1, z: 0 };
-        _scratchTargetNormal.set(rawNorm.x, rawNorm.y, rawNorm.z);
-        if (_scratchTargetNormal.lengthSq() > 0.0001) {
-          _scratchTargetNormal.normalize();
-        } else {
-          _scratchTargetNormal.set(0, 1, 0);
-        }
+    // 2. Normal Alignment:
+    // When grounded: align UP vector to terrain surface normal
+    // When airborne: smoothly level out to world UP (0, 1, 0)
+    if (player.isGrounded) {
+      const rawNorm = this.terrainManager?.getNormalAt(player.position.x, player.position.z) || { x: 0, y: 1, z: 0 };
+      _scratchTargetNormal.set(rawNorm.x, rawNorm.y, rawNorm.z);
+      if (_scratchTargetNormal.lengthSq() > 0.0001) {
+        _scratchTargetNormal.normalize();
       } else {
         _scratchTargetNormal.set(0, 1, 0);
       }
-
-      if (!this._initialized) {
-        this.currentNormal.copy(_scratchTargetNormal);
-        this._initialized = true;
-      } else {
-        const lerpRate = player.isGrounded ? 18.0 : 8.0;
-        this.currentNormal.lerp(_scratchTargetNormal, Math.min(1.0, lerpRate * dt)).normalize();
-      }
-
-      // 3. Forward Heading:
-      const headingYaw = player.yaw;
-      _scratchForward.set(-Math.sin(headingYaw), 0, -Math.cos(headingYaw));
-
-      const dotNorm = _scratchForward.dot(this.currentNormal);
-      _scratchForward.addScaledVector(this.currentNormal, -dotNorm);
-      if (_scratchForward.lengthSq() > 0.0001) {
-        _scratchForward.normalize();
-      } else {
-        _scratchForward.set(0, 0, 1);
-      }
-
-      _scratchUp.copy(this.currentNormal);
-      _scratchRight.crossVectors(_scratchUp, _scratchForward).normalize();
-
-      // 4. Carving Banking / Roll:
-      // Banks rider and snowboard into turns driven by mouse steering
-      const targetBank = player.steerBank || 0.0;
-      this.currentBankAngle = THREE.MathUtils.damp(this.currentBankAngle, targetBank, 10.0, dt);
-
-      if (Math.abs(this.currentBankAngle) > 0.001) {
-        _scratchUp.applyAxisAngle(_scratchForward, this.currentBankAngle);
-        _scratchRight.applyAxisAngle(_scratchForward, this.currentBankAngle);
-      }
-
-      // 5. Snowboard slide alignment (zero brake slide since brake control was removed)
-      this.currentBrakeAngle = 0.0;
-
-      // 6. Apply Orthonormal Rotation Basis Matrix
-      _scratchBasisMatrix.makeBasis(_scratchRight, _scratchUp, _scratchForward);
-      this.group.quaternion.setFromRotationMatrix(_scratchBasisMatrix);
+    } else {
+      _scratchTargetNormal.set(0, 1, 0);
     }
+
+    if (!this._initialized) {
+      this.currentNormal.copy(_scratchTargetNormal);
+      this._initialized = true;
+    } else {
+      const lerpRate = player.isGrounded ? 18.0 : 8.0;
+      this.currentNormal.lerp(_scratchTargetNormal, Math.min(1.0, lerpRate * dt)).normalize();
+    }
+
+    // 3. Forward Heading:
+    const headingYaw = player.yaw;
+    _scratchForward.set(-Math.sin(headingYaw), 0, -Math.cos(headingYaw));
+
+    const dotNorm = _scratchForward.dot(this.currentNormal);
+    _scratchForward.addScaledVector(this.currentNormal, -dotNorm);
+    if (_scratchForward.lengthSq() > 0.0001) {
+      _scratchForward.normalize();
+    } else {
+      _scratchForward.set(0, 0, 1);
+    }
+
+    _scratchUp.copy(this.currentNormal);
+    _scratchRight.crossVectors(_scratchUp, _scratchForward).normalize();
+
+    // 4. Carving Banking / Roll:
+    // Banks rider and snowboard into turns driven by mouse steering
+    const targetBank = player.steerBank || 0.0;
+    this.currentBankAngle = THREE.MathUtils.damp(this.currentBankAngle, targetBank, 10.0, dt);
+
+    if (Math.abs(this.currentBankAngle) > 0.001) {
+      _scratchUp.applyAxisAngle(_scratchForward, this.currentBankAngle);
+      _scratchRight.applyAxisAngle(_scratchForward, this.currentBankAngle);
+    }
+
+    const altitude = player.getAltitude ? player.getAltitude() : (player.altitude || 0);
+
+    // 5. Snowboard slide alignment (zero brake slide since brake control was removed)
+    this.currentBrakeAngle = 0.0;
+
+    // 6. Apply Orthonormal Rotation Basis Matrix
+    _scratchBasisMatrix.makeBasis(_scratchRight, _scratchUp, _scratchForward);
+    this.group.quaternion.setFromRotationMatrix(_scratchBasisMatrix);
 
     // 7. Animation State Machine & Blending:
     // - Falling: triggered only when airborne AND height above ground exceeds threshold (big cliff drops)
     // - Boost: when holding W / ArrowUp acceleration
     // - Cruise: default carving stance
     const isAirborne = player.isAirborne();
-    const altitude = player.getAltitude ? player.getAltitude() : (player.altitude || 0);
 
     let targetState = 'cruise';
-    if (player.isGrinding) {
-      targetState = player.keys.forward ? 'boost' : 'cruise';
-    } else if (isAirborne && (altitude >= this.fallHeightThreshold || (this.currentState === 'fall' && !player.isGrounded))) {
+    if (isAirborne && (altitude >= this.fallHeightThreshold || (this.currentState === 'fall' && !player.isGrounded))) {
       targetState = 'fall';
     } else if (player.keys.forward) {
       targetState = 'boost';
@@ -655,7 +629,7 @@ export class CharacterModel {
   _updateSpray(dt, player) {
     if (!this.sprayMesh) return;
 
-    const isGrounded = player.isGrounded && !player.isGrinding;
+    const isGrounded = player.isGrounded;
     const speed = player.speed || 0;
     const isCarving = Math.abs(this.currentBankAngle) > 0.08;
     const isBoosting = this.currentState === 'boost';
