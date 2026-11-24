@@ -8,13 +8,11 @@ import { TreeImpostorBaker } from './TreeImpostorBaker.js';
 
 /**
  * Deterministically maps a world position (x, z) and terrain seed to a tree foliage type.
- * All foliage types use the single BranchMat_diffuse_green.png texture and are recolored
- * via TreeLeafShader on the GPU based on the seed.
  *
  * @param {number} x - World X position
  * @param {number} z - World Z position
  * @param {number} [seed=1337] - World generation seed
- * @returns {'green'|'orange'|'snow'|'gold'|'crimson'|'spruce'}
+ * @returns {'pine'}
  */
 export function getTreeFoliageType(x, z, seed = 1337) {
   const ix = Math.round(x * 100) | 0;
@@ -50,67 +48,38 @@ export function getModelCategory(name) {
 }
 
 /**
- * Default live-tunable scale and rotation bounds for all tree variants in the pack.
- * Rotations are specified in degrees for intuitive user control.
+ * Default live-tunable scale, rotation, and position offset bounds for all tree variants in the pack.
+ * Rotations are specified in degrees and position offsets in world meters for intuitive user control.
  */
 export const DEFAULT_TREE_CONFIGS = {
-  long_1: {
+  pine_4m: {
     minScale: 3,
-    maxScale: 3,
+    maxScale: 8,
+    minRotX: -15,
+    maxRotX: 15,
+    minRotY: 0,
+    maxRotY: 360,
+    minRotZ: -16,
+    maxRotZ: 15,
+    posOffset: { x: 0, y: -1.5, z: 0 },
+  },
+  pine: {
+    minScale: 1.8,
+    maxScale: 3.2,
     minRotX: -4,
     maxRotX: 4,
     minRotY: 0,
     maxRotY: 360,
     minRotZ: -4,
     maxRotZ: 4,
-  },
-  long_2: {
-    minScale: 0.8,
-    maxScale: 3,
-    minRotX: -8,
-    maxRotX: 21,
-    minRotY: 0,
-    maxRotY: 360,
-    minRotZ: -3,
-    maxRotZ: 14,
-  },
-  small_1: {
-    minScale: 3,
-    maxScale: 3,
-    minRotX: -5,
-    maxRotX: 5,
-    minRotY: 0,
-    maxRotY: 360,
-    minRotZ: -5,
-    maxRotZ: 5,
-  },
-  small_2: {
-    minScale: 1.1,
-    maxScale: 2,
-    minRotX: 0,
-    maxRotX: -1,
-    minRotY: 0,
-    maxRotY: 360,
-    minRotZ: 1,
-    maxRotZ: 1,
-  },
-  dead_1: {
-    minScale: 0.35,
-    maxScale: 2.7,
-    minRotX: -45,
-    maxRotX: 45,
-    minRotY: 0,
-    maxRotY: 360,
-    minRotZ: -32,
-    maxRotZ: 38,
+    posOffset: { x: 0, y: -0.75, z: 0 },
   },
 };
 
 /**
  * TreeGenerator
- * Preloads, extracts, indexes, and scatters environment models from public/models.
- * Natively supports multi-model asset packs (such as trees_pack.fbx) by extracting
- * each distinct tree variant into an optimized, multi-material indexed geometry.
+ * Preloads, extracts, indexes, and scatters Pine 4m environment models from public/models.
+ * Extracts tree variants into optimized, multi-material indexed geometry.
  * Applies authentic high-resolution textures (diffuse + normal maps) and provides
  * full 360-degree Y-rotation and natural size distribution.
  */
@@ -141,14 +110,14 @@ export class TreeGenerator {
     this.seed = options.seed || 1337;
     this.heightmap = options.heightmap;
     this.chunkSize = options.chunkSize || 64;
-    this.treeGridStep = options.treeGridStep || 14.0; // Increased spacing between trees for natural alpine glades
-    this.treeDensity = options.treeDensity !== undefined ? options.treeDensity : 0.45; // Reduced spawn density multiplier (0.45 vs 0.65)
+    this.treeGridStep = options.treeGridStep || 11.0; // Denser conifer spacing across alpine slopes
+    this.treeDensity = options.treeDensity !== undefined ? options.treeDensity : 0.68; // Increased forest density multiplier
 
     // Environmental density noise generators
     this.treeNoise = new SimplexNoise(this.seed + 777);
 
     // Active selection
-    this.selection = options.treeModel || options.treeModelPath || '/models/trees_pack.fbx';
+    this.selection = options.treeModel || options.treeModelPath || '/models/Pine_4m.glb';
 
     // Extracted and categorized models
     this.activeTrees = [];
@@ -187,21 +156,41 @@ export class TreeGenerator {
     for (const [k, v] of Object.entries(this.treeConfigs)) {
       if (key.includes(k.toLowerCase())) return v;
     }
-    return this.treeConfigs.long_1 || DEFAULT_TREE_CONFIGS.long_1;
+    return this.treeConfigs.pine_4m || this.treeConfigs.pine || DEFAULT_TREE_CONFIGS.pine_4m;
   }
 
   /**
-   * Updates the scale & rotation configuration for a specific tree variant.
+   * Merges incoming config updates while preserving nested posOffset axes.
+   * @private
+   */
+  _mergeTreeConfig(existing, incoming) {
+    if (!existing) {
+      const copy = { ...incoming };
+      if (incoming?.posOffset && typeof incoming.posOffset === 'object') {
+        copy.posOffset = { x: 0, y: 0, z: 0, ...incoming.posOffset };
+      }
+      return copy;
+    }
+    const merged = { ...existing, ...incoming };
+    if (
+      incoming?.posOffset &&
+      typeof incoming.posOffset === 'object' &&
+      existing.posOffset &&
+      typeof existing.posOffset === 'object'
+    ) {
+      merged.posOffset = { ...existing.posOffset, ...incoming.posOffset };
+    }
+    return merged;
+  }
+
+  /**
+   * Updates the scale, rotation & position offset configuration for a specific tree variant.
    * @param {string} variantName
    * @param {Object} config
    */
   setTreeConfig(variantName, config) {
     const key = Object.keys(this.treeConfigs).find(k => (variantName || '').toLowerCase().includes(k.toLowerCase())) || variantName;
-    if (this.treeConfigs[key]) {
-      this.treeConfigs[key] = { ...this.treeConfigs[key], ...config };
-    } else {
-      this.treeConfigs[key] = { ...config };
-    }
+    this.treeConfigs[key] = this._mergeTreeConfig(this.treeConfigs[key], config);
   }
 
   /**
@@ -219,12 +208,55 @@ export class TreeGenerator {
   setAllTreeConfigs(configs) {
     if (!configs || typeof configs !== 'object') return;
     for (const [k, v] of Object.entries(configs)) {
-      if (this.treeConfigs[k]) {
-        this.treeConfigs[k] = { ...this.treeConfigs[k], ...v };
-      } else {
-        this.treeConfigs[k] = { ...v };
-      }
+      this.treeConfigs[k] = this._mergeTreeConfig(this.treeConfigs[k], v);
     }
+  }
+
+  /**
+   * Resolves a variant config's position offset into { x, y, z } world meters.
+   * Supports `{ x, y, z }` objects, scalar Y numbers, or flat `posOffsetX/Y/Z` keys.
+   * @private
+   */
+  _resolvePosOffset(cfg) {
+    if (!cfg) return { x: 0, y: 0, z: 0 };
+    const po = cfg.posOffset;
+    if (typeof po === 'number') {
+      return { x: 0, y: Number.isFinite(po) ? po : 0, z: 0 };
+    }
+    if (po && typeof po === 'object') {
+      return {
+        x: Number.isFinite(po.x) ? po.x : 0,
+        y: Number.isFinite(po.y) ? po.y : 0,
+        z: Number.isFinite(po.z) ? po.z : 0,
+      };
+    }
+    return {
+      x: Number.isFinite(cfg.posOffsetX) ? cfg.posOffsetX : 0,
+      y: Number.isFinite(cfg.posOffsetY) ? cfg.posOffsetY : 0,
+      z: Number.isFinite(cfg.posOffsetZ) ? cfg.posOffsetZ : 0,
+    };
+  }
+
+  /**
+   * Computes normalized scale, radian rotation, and position offset bounds from a tree config.
+   * @private
+   */
+  _getTransformBounds(cfg) {
+    const degToRad = Math.PI / 180;
+    const { x: offsetX, y: offsetY, z: offsetZ } = this._resolvePosOffset(cfg);
+    return {
+      minS: Math.min(cfg.minScale, cfg.maxScale),
+      maxS: Math.max(cfg.minScale, cfg.maxScale),
+      minRx: Math.min(cfg.minRotX, cfg.maxRotX) * degToRad,
+      maxRx: Math.max(cfg.minRotX, cfg.maxRotX) * degToRad,
+      minRy: Math.min(cfg.minRotY, cfg.maxRotY) * degToRad,
+      maxRy: Math.max(cfg.minRotY, cfg.maxRotY) * degToRad,
+      minRz: Math.min(cfg.minRotZ, cfg.maxRotZ) * degToRad,
+      maxRz: Math.max(cfg.minRotZ, cfg.maxRotZ) * degToRad,
+      offsetX,
+      offsetY,
+      offsetZ,
+    };
   }
 
   /**
@@ -235,6 +267,7 @@ export class TreeGenerator {
   async _loadTextures() {
     if (TreeGenerator._textureCache) return TreeGenerator._textureCache;
     TreeGenerator._textureCache = await TreeTextureFactory.loadTextures();
+    TreeGenerator._materialCache = null;
     return TreeGenerator._textureCache;
   }
 
@@ -303,6 +336,7 @@ export class TreeGenerator {
       this.activeTrees = [];
       this.activeSnags = [];
       this.activeTreesByFoliage = {
+        pine: [],
         green: [],
         orange: [],
         snow: [],
@@ -316,11 +350,17 @@ export class TreeGenerator {
           this.activeSnags.push(m);
         } else {
           this.activeTrees.push(m);
-          const fType = m.foliageType || 'green';
+          const fType = m.foliageType || 'pine';
           if (!this.activeTreesByFoliage[fType]) {
             this.activeTreesByFoliage[fType] = [];
           }
           this.activeTreesByFoliage[fType].push(m);
+          // Also link to alias pools for backward compatibility
+          for (const key of ['green', 'orange', 'snow', 'gold', 'crimson', 'spruce']) {
+            if (!this.activeTreesByFoliage[key].includes(m)) {
+              this.activeTreesByFoliage[key].push(m);
+            }
+          }
         }
       }
 
@@ -351,10 +391,10 @@ export class TreeGenerator {
       const baker = new TreeImpostorBaker(this.renderer, {
         environment: env,
         sunPosition: new THREE.Vector3(130, 190, 90),
-        sunColor: 0xfff5e6,
-        sunIntensity: 2.1,
-        ambientColor: 0xd6e5f7,
-        ambientIntensity: 0.22,
+        sunColor: 0xffeacc,
+        sunIntensity: 2.3,
+        ambientColor: 0xd0e2f7,
+        ambientIntensity: 0.17,
         groundBounceColor: 0xf2f5f9,
         groundBounceIntensity: 0.35,
       });
@@ -401,10 +441,12 @@ export class TreeGenerator {
       } else {
         const treeManager = new THREE.LoadingManager();
         treeManager.setURLModifier((url) => {
-          if (url.includes('BranchMat_diffuse.png')) return '/textures/BranchMat_diffuse_green.png';
-          if (url.includes('BranchMat_normal.png')) return '/textures/BranchMat_normal.png';
-          if (url.includes('BarkMat_diffuse.png')) return '/textures/BarkMat_diffuse.png';
-          if (url.includes('BarkMat_normal.png')) return '/textures/BarkMat_normal.png';
+          if (url.includes('pine-leaf-diff')) return '/textures/pine-leaf-diff.png';
+          if (url.includes('pine-leaf-norm')) return '/textures/pine-leaf-norm.png';
+          if (url.includes('pine-branch-diff')) return '/textures/pine-branch-diff.png';
+          if (url.includes('pine-branch-norm')) return '/textures/pine-branch-norm.png';
+          if (url.includes('pine-trunk-diff')) return '/textures/pine-trunk-diff.png';
+          if (url.includes('pine-trunk-norm')) return '/textures/pine-trunk-norm.png';
           return url;
         });
         const fbxLoader = new FBXLoader(treeManager);
@@ -424,7 +466,7 @@ export class TreeGenerator {
 
   /**
    * Inspects the scene graph and extracts distinct variants.
-   * Handles multi-tree packs (e.g. trees_pack.fbx) by extracting each child as an individual variant.
+   * Handles model packs and single models by extracting each child as an individual variant.
    * @private
    */
   _extractModelVariants(rootNode, path, filename) {
@@ -606,49 +648,28 @@ export class TreeGenerator {
 
     const sharedMats = TreeGenerator.getSharedMaterials(this.seed);
 
-    // If dead snag or no branch sub-meshes present, return single snag model
-    if (isDeadTree || !isBranchFlags.some(Boolean)) {
-      const mats = meshes.map(() => sharedMats.deadBark);
-      return [{
-        name: variantName || filename,
-        path,
-        category: 'snag',
-        isDead: true,
-        modelHeight: Math.max(0.5, actualHeight),
-        trunkRadius,
-        branchRadius,
-        geometry: finalGeom,
-        materials: mats.length === 1 ? mats[0] : mats,
-      }];
-    }
-
-    // Live pine tree: generate shader-driven foliage variations using BranchMat_diffuse_green
-    // All variations share the exact same geometry to eliminate GPU memory overhead
-    const foliageConfigs = [
-      { id: 'green', suffix: '_green', needleMat: sharedMats.needlesGreen },
-      { id: 'orange', suffix: '_orange', needleMat: sharedMats.needlesOrange },
-      { id: 'snow', suffix: '_snow', needleMat: sharedMats.needlesSnow },
-      { id: 'gold', suffix: '_gold', needleMat: sharedMats.needlesGold },
-      { id: 'crimson', suffix: '_crimson', needleMat: sharedMats.needlesCrimson },
-      { id: 'spruce', suffix: '_spruce', needleMat: sharedMats.needlesSpruce },
-    ];
-
-    return foliageConfigs.map((cfg) => {
-      const mats = isBranchFlags.map((isBranch) => (isBranch ? cfg.needleMat : sharedMats.livingBark));
-      return {
-        name: `${variantName || filename}${cfg.suffix}`,
-        baseName: variantName || filename,
-        foliageType: cfg.id,
-        path,
-        category: 'pine',
-        isDead: false,
-        modelHeight: Math.max(0.5, actualHeight),
-        trunkRadius,
-        branchRadius,
-        geometry: finalGeom,
-        materials: mats.length === 1 ? mats[0] : mats,
-      };
+    // Map each mesh to authentic Pine 4m PBR materials (trunk, branch, leaf)
+    const mats = meshes.map((m) => {
+      const matName = (m.material?.name || m.name || '').toLowerCase();
+      if (matName.includes('leaf') || matName.includes('needle')) return sharedMats.leaf;
+      if (matName.includes('branch')) return sharedMats.branch;
+      if (matName.includes('trunk') || matName.includes('bark') || matName.includes('stamm')) return sharedMats.trunk;
+      return sharedMats.trunk;
     });
+
+    return [{
+      name: variantName || 'pine_4m',
+      baseName: variantName || 'pine_4m',
+      foliageType: 'pine',
+      path,
+      category: 'pine',
+      isDead: false,
+      modelHeight: Math.max(0.5, actualHeight),
+      trunkRadius,
+      branchRadius,
+      geometry: finalGeom,
+      materials: mats.length === 1 ? mats[0] : mats,
+    }];
   }
 
   /**
@@ -687,8 +708,8 @@ export class TreeGenerator {
       list.push({ x, y, z, scaleHash, rotXHash, rotYHash, rotZHash });
     };
 
-    // Organic spacing grid with wider natural spacing
-    const treeGridStep = this.treeGridStep || 14.0;
+    // Organic spacing grid
+    const treeGridStep = this.treeGridStep || 11.0;
     const cells = Math.floor(this.chunkSize / treeGridStep);
 
     for (let gx = 0; gx < cells; gx++) {
@@ -732,7 +753,7 @@ export class TreeGenerator {
         if (density < -0.02) continue;
 
         const prob = Math.min(1.0, (density + 0.02) * 1.6) * biomeDensityFactor;
-        if (spawnHash >= prob * (this.treeDensity || 0.45)) continue;
+        if (spawnHash >= prob * (this.treeDensity || 0.68)) continue;
 
         // 5. Timberline & Snag selection
         // Dried trees (snags) are natural alpine accents: balanced at ~8% in valleys and ski slopes,
@@ -765,8 +786,8 @@ export class TreeGenerator {
         const rotYHash = this._hash(chunkX, chunkZ, gx * 91 + 17, gz * 103 + 31);
         const rotZHash = this._hash(chunkX, chunkZ, gx * 47 + 19, gz * 53 + 23);
 
-        // Sink trunk 0.35m into snow to bury roots naturally on sloped terrain
-        addInstance(modelData, wx, wy - 0.35, wz, scaleHash, rotXHash, rotYHash, rotZHash);
+        // Store terrain surface anchor; per-variant posOffset in treeConfigs keeps the trunk grounded on land
+        addInstance(modelData, wx, wy, wz, scaleHash, rotXHash, rotYHash, rotZHash);
       }
     }
 
@@ -804,14 +825,7 @@ export class TreeGenerator {
       }
 
       const cfg = this.getTreeConfig(modelData.name);
-      const minS = Math.min(cfg.minScale, cfg.maxScale);
-      const maxS = Math.max(cfg.minScale, cfg.maxScale);
-      const minRx = Math.min(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
-      const maxRx = Math.max(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
-      const minRy = Math.min(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
-      const maxRy = Math.max(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
-      const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
-      const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+      const { minS, maxS, minRx, maxRx, minRy, maxRy, minRz, maxRz, offsetX, offsetY, offsetZ } = this._getTransformBounds(cfg);
 
       for (let i = 0; i < instances.length; i++) {
         const inst = instances[i];
@@ -819,8 +833,11 @@ export class TreeGenerator {
         const rotX = minRx + (maxRx - minRx) * inst.rotXHash;
         const rotY = minRy + (maxRy - minRy) * inst.rotYHash;
         const rotZ = minRz + (maxRz - minRz) * inst.rotZHash;
+        const posX = inst.x + offsetX;
+        const posY = inst.y + offsetY;
+        const posZ = inst.z + offsetZ;
 
-        dummy.position.set(inst.x, inst.y, inst.z);
+        dummy.position.set(posX, posY, posZ);
         // 'YXZ' rotation order: spins yaw around the tree trunk first, then applies tilt
         dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
         dummy.scale.set(scale, scale, scale);
@@ -836,9 +853,9 @@ export class TreeGenerator {
         // Identifies dry / dead trees (snags) so they do not shed foliage leaves.
         const isDeadTree = Boolean(modelData.isDead);
         treeColliders.push({
-          x: inst.x,
-          y: inst.y,
-          z: inst.z,
+          x: posX,
+          y: posY,
+          z: posZ,
           radius: (modelData.trunkRadius || 0.22) * scale,
           height: (modelData.modelHeight || 8.0) * scale,
           branchRadius: isDeadTree ? 0 : ((modelData.branchRadius || 4.5) * scale),
@@ -933,14 +950,7 @@ export class TreeGenerator {
           const baseRad = modelData?.trunkRadius || 0.22;
           const baseHeight = modelData?.modelHeight || 8.0;
 
-          const minS = Math.min(cfg.minScale, cfg.maxScale);
-          const maxS = Math.max(cfg.minScale, cfg.maxScale);
-          const minRx = Math.min(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
-          const maxRx = Math.max(cfg.minRotX, cfg.maxRotX) * (Math.PI / 180);
-          const minRy = Math.min(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
-          const maxRy = Math.max(cfg.minRotY, cfg.maxRotY) * (Math.PI / 180);
-          const minRz = Math.min(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
-          const maxRz = Math.max(cfg.minRotZ, cfg.maxRotZ) * (Math.PI / 180);
+          const { minS, maxS, minRx, maxRx, minRy, maxRy, minRz, maxRz, offsetX, offsetY, offsetZ } = this._getTransformBounds(cfg);
 
           for (let i = 0; i < instances.length; i++) {
             const inst = instances[i];
@@ -948,8 +958,11 @@ export class TreeGenerator {
             const rotX = minRx + (maxRx - minRx) * inst.rotXHash;
             const rotY = minRy + (maxRy - minRy) * inst.rotYHash;
             const rotZ = minRz + (maxRz - minRz) * inst.rotZHash;
+            const posX = inst.x + offsetX;
+            const posY = inst.y + offsetY;
+            const posZ = inst.z + offsetZ;
 
-            dummy.position.set(inst.x, inst.y, inst.z);
+            dummy.position.set(posX, posY, posZ);
             dummy.rotation.set(rotX, rotY, rotZ, 'YXZ');
             dummy.scale.set(scale, scale, scale);
             dummy.updateMatrix();
@@ -958,9 +971,9 @@ export class TreeGenerator {
             if (isPrimary3D && chunk.treeColliders) {
               const isDeadTree = Boolean(modelData?.isDead);
               chunk.treeColliders.push({
-                x: inst.x,
-                y: inst.y,
-                z: inst.z,
+                x: posX,
+                y: posY,
+                z: posZ,
                 radius: baseRad * scale,
                 height: baseHeight * scale,
                 branchRadius: isDeadTree ? 0 : ((modelData?.branchRadius || 4.5) * scale),
@@ -983,13 +996,13 @@ export class TreeGenerator {
 export const EnvironmentGenerator = TreeGenerator;
 export const AVAILABLE_TREE_MODELS = [
   {
-    name: 'Conifer Trees Pack',
-    path: '/models/trees_pack.fbx',
+    name: 'Pine 4m',
+    path: '/models/Pine_4m.glb',
     category: 'pine',
   }
 ];
 export const TREE_MODEL_LIST = AVAILABLE_TREE_MODELS;
-export const ALL_MODEL_FILENAMES = ['trees_pack.fbx'];
+export const ALL_MODEL_FILENAMES = ['Pine_4m.glb'];
 export const ENVIRONMENT_PRESETS = [];
-export const resolveTreeModelPath = (s) => s || '/models/trees_pack.fbx';
-export const resolveEnvironmentSelection = (s) => s || '/models/trees_pack.fbx';
+export const resolveTreeModelPath = (s) => s || '/models/Pine_4m.glb';
+export const resolveEnvironmentSelection = (s) => s || '/models/Pine_4m.glb';

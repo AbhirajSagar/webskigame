@@ -4,6 +4,12 @@
  * dramatic rocky mountain ranges, smooth arêtes, and towering peaks.
  */
 
+const F2 = 0.5 * (Math.sqrt(3.0) - 1.0);
+const G2 = (3.0 - Math.sqrt(3.0)) / 6.0;
+const G2_2 = 2.0 * G2;
+const GRAD3_X = new Int8Array([1, -1, 1, -1, 1, -1, 1, -1, 0, 0, 0, 0]);
+const GRAD3_Y = new Int8Array([1, 1, -1, -1, 0, 0, 0, 0, 1, -1, 1, -1]);
+
 export class SimplexNoise {
   constructor(seed = 1337) {
     this.p = new Uint8Array(256);
@@ -35,9 +41,6 @@ export class SimplexNoise {
   }
 
   noise2D(xin, yin) {
-    const F2 = 0.5 * (Math.sqrt(3.0) - 1.0);
-    const G2 = (3.0 - Math.sqrt(3.0)) / 6.0;
-
     let n0 = 0, n1 = 0, n2 = 0;
 
     const s = (xin + yin) * F2;
@@ -60,40 +63,31 @@ export class SimplexNoise {
 
     const x1 = x0 - i1 + G2;
     const y1 = y0 - j1 + G2;
-    const x2 = x0 - 1.0 + 2.0 * G2;
-    const y2 = y0 - 1.0 + 2.0 * G2;
+    const x2 = x0 - 1.0 + G2_2;
+    const y2 = y0 - 1.0 + G2_2;
 
     const ii = i & 255;
     const jj = j & 255;
 
-    const grad3 = [
-      [1, 1], [-1, 1], [1, -1], [-1, -1],
-      [1, 0], [-1, 0], [1, 0], [-1, 0],
-      [0, 1], [0, -1], [0, 1], [0, -1]
-    ];
-
     let t0 = 0.5 - x0 * x0 - y0 * y0;
     if (t0 >= 0) {
       const gi0 = this.permMod12[ii + this.perm[jj]];
-      const g0 = grad3[gi0];
       t0 *= t0;
-      n0 = t0 * t0 * (g0[0] * x0 + g0[1] * y0);
+      n0 = t0 * t0 * (GRAD3_X[gi0] * x0 + GRAD3_Y[gi0] * y0);
     }
 
     let t1 = 0.5 - x1 * x1 - y1 * y1;
     if (t1 >= 0) {
       const gi1 = this.permMod12[ii + i1 + this.perm[jj + j1]];
-      const g1 = grad3[gi1];
       t1 *= t1;
-      n1 = t1 * t1 * (g1[0] * x1 + g1[1] * y1);
+      n1 = t1 * t1 * (GRAD3_X[gi1] * x1 + GRAD3_Y[gi1] * y1);
     }
 
     let t2 = 0.5 - x2 * x2 - y2 * y2;
     if (t2 >= 0) {
       const gi2 = this.permMod12[ii + 1 + this.perm[jj + 1]];
-      const g2 = grad3[gi2];
       t2 *= t2;
-      n2 = t2 * t2 * (g2[0] * x2 + g2[1] * y2);
+      n2 = t2 * t2 * (GRAD3_X[gi2] * x2 + GRAD3_Y[gi2] * y2);
     }
 
     return 70.0 * (n0 + n1 + n2);
@@ -182,6 +176,9 @@ export class TerrainHeightmap {
     this.simplexPark = new SimplexNoise(seed + 707);
     this.simplexCanyon = new SimplexNoise(seed + 808);
     this._lakeCellCache = new Map();
+    this._scratchBiome = { raw: 0, wCirque: 0, wPark: 0, wBowls: 1, primary: 'bowls' };
+    this._scratchLake = { factor: 0, depth: 0, elevation: 0, isFrozenLake: false };
+    this._scratchNormal = { x: 0, y: 1, z: 0 };
   }
 
   getConfig() {
@@ -211,7 +208,7 @@ export class TerrainHeightmap {
    * @param {number} z
    * @returns {{ raw: number, wCirque: number, wPark: number, wBowls: number, primary: 'cirque'|'park'|'bowls' }}
    */
-  getBiomeData(x, z) {
+  getBiomeData(x, z, out = null) {
     const freq = this.options.biomeFrequency;
     const warp1 = this.simplexWarp.noise2D(x * 0.0012, z * 0.0012) * 50.0;
     const warp2 = this.simplexWarp.noise2D((x + 65.3) * 0.0030, (z + 41.7) * 0.0030) * 14.0;
@@ -227,7 +224,13 @@ export class TerrainHeightmap {
     if (wCirque > wPark && wCirque > wBowls) primary = 'cirque';
     else if (wPark > wCirque && wPark > wBowls) primary = 'park';
 
-    return { raw: biomeRaw, wCirque, wPark, wBowls, primary };
+    const res = out || { raw: 0, wCirque: 0, wPark: 0, wBowls: 1, primary: 'bowls' };
+    res.raw = biomeRaw;
+    res.wCirque = wCirque;
+    res.wPark = wPark;
+    res.wBowls = wBowls;
+    res.primary = primary;
+    return res;
   }
 
   /**
@@ -266,8 +269,8 @@ export class TerrainHeightmap {
     const cliffButtress = this.simplexCrags.noise2D(wx * 0.0035 + 17.0, wz * 0.0035 + 41.0);
     const corridorWalls = wallBase * (85.0 + Math.max(0.0, cliffButtress) * 35.0) * this.options.corridorWalls;
 
-    // Biome weights
-    const biome = this.getBiomeData(x, z);
+    // Biome weights (reuse scratch object to avoid heap allocations per height query)
+    const biome = this.getBiomeData(x, z, this._scratchBiome);
 
     // 4. Alpine Mountain Massifs & Ridge Formations (Cirque Zone)
     // Uses C^2 smooth hyperbolic ridged multifractals (zero piecewise cusps or sawtooth steps)
@@ -370,8 +373,9 @@ export class TerrainHeightmap {
    * @private
    */
   _getCellLake(cellX, cellZ) {
-    const key = `${cellX},${cellZ}`;
-    if (this._lakeCellCache.has(key)) return this._lakeCellCache.get(key);
+    const key = (cellX + 32768) * 65536 + (cellZ + 32768);
+    const cached = this._lakeCellCache.get(key);
+    if (cached !== undefined) return cached;
 
     const cellSize = LAKE_CELL_SIZE;
     const h1x = Math.sin(cellX * 127.1 + cellZ * 311.7) * 43758.5453;
@@ -458,8 +462,8 @@ export class TerrainHeightmap {
     // Subtle surface micro-undulation for snow surface relief
     const micro = this.simplexBase.noise2D(wx * 0.010, wz * 0.010) * 0.35;
 
-    // Frozen Alpine Lake Basins
-    const lake = this.getLakeData(x, z);
+    // Frozen Alpine Lake Basins (reuse scratch object for zero per-vertex allocations)
+    const lake = this.getLakeData(x, z, this._scratchLake);
     let elevation = baseElev;
     if (lake.factor > 0.0) {
       const flatT = smoothstep(0.0, 0.65, lake.factor);
@@ -475,9 +479,10 @@ export class TerrainHeightmap {
    * Deterministic cellular query for flat frozen alpine lake basins.
    * @param {number} x
    * @param {number} z
+   * @param {Object} [out]
    * @returns {{ factor: number, depth: number, elevation: number, isFrozenLake: boolean }}
    */
-  getLakeData(x, z) {
+  getLakeData(x, z, out = null) {
     const cellSize = LAKE_CELL_SIZE;
     const cx = Math.floor(x / cellSize);
     const cz = Math.floor(z / cellSize);
@@ -510,7 +515,12 @@ export class TerrainHeightmap {
       }
     }
 
-    return { factor: maxFactor, depth: maxDepth, elevation: lakeElevation, isFrozenLake };
+    const res = out || { factor: 0, depth: 0, elevation: 0, isFrozenLake: false };
+    res.factor = maxFactor;
+    res.depth = maxDepth;
+    res.elevation = lakeElevation;
+    res.isFrozenLake = isFrozenLake;
+    return res;
   }
 
   /**
@@ -577,11 +587,12 @@ export class TerrainHeightmap {
    * Uses epsilon=0.85m to band-limit derivatives to the mesh grid spacing,
    * eliminating sub-grid derivative oscillation and polygon sawtooth aliasing.
    */
-  getNormal(x, z, epsilon = 0.85) {
-    const lake = this.getLakeData(x, z);
+  getNormal(x, z, epsilon = 0.85, out = null) {
+    const lake = this.getLakeData(x, z, this._scratchLake);
     if (lake.factor > 0.65) {
-      // Ice sheet is completely horizontal (zero slope)
-      return { x: 0.0, y: 1.0, z: 0.0 };
+      const res = out || { x: 0.0, y: 1.0, z: 0.0 };
+      res.x = 0.0; res.y = 1.0; res.z = 0.0;
+      return res;
     }
 
     const hL = this.getHeight(x - epsilon, z);
@@ -596,11 +607,11 @@ export class TerrainHeightmap {
     const ny = 1.0;
     const nz = -dhdz;
 
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-    return {
-      x: nx / len,
-      y: ny / len,
-      z: nz / len,
-    };
+    const invLen = 1.0 / Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const res = out || { x: 0, y: 1, z: 0 };
+    res.x = nx * invLen;
+    res.y = ny * invLen;
+    res.z = nz * invLen;
+    return res;
   }
 }

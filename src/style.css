@@ -27,8 +27,7 @@ body {
   touch-action: none;
 }
 
-/* Hide all UI elements for pure recording */
-#fps-counter,
+/* Hide wireframe toggle button for pure recording */
 #wireframe-toggle-btn {
   display: none !important;
   visibility: hidden !important;

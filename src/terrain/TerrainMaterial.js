@@ -5,10 +5,10 @@ import * as THREE from 'three';
  * Completely customizable and exportable as JSON.
  */
 export const DEFAULT_SNOW_CONFIG = {
-  // Chromatic Snow Palette (pure radiant alpine snow with sky-blue ambient shadows)
-  sunlitColor: '#f2f5f9',
-  shadowColor: '#2d5ba8',
-  creviceColor: '#1d2735',
+  // Chromatic Snow Palette (pure radiant alpine snow with crisp cool-blue shadows)
+  sunlitColor: '#f4f7fb',
+  shadowColor: '#244b91',
+  creviceColor: '#192230',
 
   // Slope & Wind Scour
   slopeMin: 0.42,
@@ -174,6 +174,7 @@ export class TerrainMaterialFactory {
       color: 0xffffff,
       roughness: 0.80,
       metalness: 0.04,
+      envMapIntensity: 0.72,
       flatShading: false,
       side: THREE.DoubleSide,
     });
@@ -358,10 +359,10 @@ export class TerrainMaterialFactory {
             }
           }
 
-          // Pass 2: calculate minimum Euclidean distance to cell boundary (perpendicular bisector)
+          // Pass 2: calculate minimum Euclidean distance to cell boundary (3x3 around closest cell)
           float edgeDist = 8.0;
-          for (int j = -2; j <= 2; j++) {
-            for (int i = -2; i <= 2; i++) {
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
               vec2 g = mg + vec2(float(i), float(j));
               vec2 o = hash2(n + g) * 0.35 + 0.5;
               vec2 r = g + o - f;
@@ -496,30 +497,37 @@ export class TerrainMaterialFactory {
         vec3 sMap2 = texture2D(uSnowNormalMap, rippleCoord).xyz * 2.0 - 1.0;
         sMap2.xy = rotateUV(sMap2.xy, -1.18);
 
-        // Layer 3: Micro powder granules (~0.9m-1.2m, crisp near snow detail)
-        vec2 microCoord = rotateUV(vCustomWorldPos.xz * 0.95, 2.35) + vec2(47.1, 13.8);
-        vec3 sMap3 = texture2D(uSnowNormalMap, microCoord).xyz * 2.0 - 1.0;
-        sMap3.xy = rotateUV(sMap3.xy, -2.35);
-
-        // Layer 4: Ultra-fine crystalline crust (under player's boots, smoothly distance-faded)
+        // Layer 3: Micro powder granules (~0.9m-1.2m, distance-gated past 140m where sub-pixel)
         float distToCam = length(uCameraPosition - vCustomWorldPos);
+        vec2 microXY = vec2(0.0);
+        float microWeight = 1.0 - smoothstep(95.0, 140.0, distToCam);
+        if (microWeight > 0.001) {
+          vec2 microCoord = rotateUV(vCustomWorldPos.xz * 0.95, 2.35) + vec2(47.1, 13.8);
+          vec3 sMap3 = texture2D(uSnowNormalMap, microCoord).xyz * 2.0 - 1.0;
+          microXY = rotateUV(sMap3.xy, -2.35) * (0.32 * microWeight);
+        }
+
+        // Layer 4: Ultra-fine crystalline crust (under player's boots, skipped beyond 38m)
+        vec2 fineXY = vec2(0.0);
         float nearWeight = clamp(1.0 - distToCam / 38.0, 0.0, 1.0);
-        vec2 fineCoord = rotateUV(vCustomWorldPos.xz * 2.8, 0.45) + vec2(83.5, 31.2);
-        vec3 sMap4 = texture2D(uSnowNormalMap, fineCoord).xyz * 2.0 - 1.0;
-        sMap4.xy = rotateUV(sMap4.xy, -0.45);
+        if (nearWeight > 0.001) {
+          vec2 fineCoord = rotateUV(vCustomWorldPos.xz * 2.8, 0.45) + vec2(83.5, 31.2);
+          vec3 sMap4 = texture2D(uSnowNormalMap, fineCoord).xyz * 2.0 - 1.0;
+          fineXY = rotateUV(sMap4.xy, -0.45) * (0.28 * nearWeight);
+        }
 
         // Composite tangent perturbation with boosted normal strength (uSnowNormalScale)
         vec2 snowPerturb = (
           sMap1.xy * 0.45 +
           sMap2.xy * 0.35 +
-          sMap3.xy * 0.32 +
-          sMap4.xy * (0.28 * nearWeight)
+          microXY +
+          fineXY
         ) * uSnowNormalScale;
 
         vec3 tangentSnowN = normalize(vec3(snowPerturb, 1.0));
         vec3 worldSnowN = normalize(tbn * tangentSnowN);
         g_worldSnowN = worldSnowN;
-        g_powderCrust = clamp((sMap2.x + sMap3.y) * 0.5 + 0.5, 0.0, 1.0);
+        g_powderCrust = clamp((sMap2.x + microXY.y) * 0.5 + 0.5, 0.0, 1.0);
 
         // Triplanar blend weights with sharpness exponent 4.0
         vec3 blending = pow(abs(vCustomWorldNorm), vec3(4.0));
@@ -599,22 +607,31 @@ export class TerrainMaterialFactory {
           float core1 = 1.0 - smoothstep(0.002, uLakeCrackWidth, edge1);
           float frostGlow1 = (1.0 - smoothstep(0.005, uLakeCrackWidth * 2.5, edge1)) * 0.42;
 
-          // 2. Secondary High-Density Branching Hairlines (Fine surface crazing at detuned angle)
-          vec2 pMicro = warpIceCoord(rotateUV(baseIceCoord * 1.95, 0.63) + vec2(27.4, 19.8));
-          float edge2 = getIceVoronoiEdge(pMicro);
-          float core2 = (1.0 - smoothstep(0.0015, uLakeCrackWidth * 0.65, edge2)) * 0.65;
+          // 2. Secondary High-Density Branching Hairlines (distance-gated past 130m)
+          float core2 = 0.0;
+          if (distToCam < 130.0) {
+            vec2 pMicro = warpIceCoord(rotateUV(baseIceCoord * 1.95, 0.63) + vec2(27.4, 19.8));
+            float edge2 = getIceVoronoiEdge(pMicro);
+            core2 = (1.0 - smoothstep(0.0015, uLakeCrackWidth * 0.65, edge2)) * 0.65 * (1.0 - smoothstep(90.0, 130.0, distToCam));
+          }
 
-          // 3. Subsurface 3D Parallax Fissures (Deep within clear ice column)
-          vec3 viewDir = normalize(uCameraPosition - vCustomWorldPos);
-          vec2 deepShift = viewDir.xz * (0.35 * lakeDepth);
-          vec2 pDeep = warpIceCoord((baseIceCoord + deepShift) * 0.55 + vec2(14.7, 43.1));
-          float edgeDeep = getIceVoronoiEdge(pDeep);
-          float coreDeep = (1.0 - smoothstep(0.003, uLakeCrackWidth * 1.35, edgeDeep)) * 0.50;
+          // 3. Subsurface 3D Parallax Fissures (distance-gated past 160m)
+          float coreDeep = 0.0;
+          if (distToCam < 160.0) {
+            vec3 viewDir = normalize(uCameraPosition - vCustomWorldPos);
+            vec2 deepShift = viewDir.xz * (0.35 * lakeDepth);
+            vec2 pDeep = warpIceCoord((baseIceCoord + deepShift) * 0.55 + vec2(14.7, 43.1));
+            float edgeDeep = getIceVoronoiEdge(pDeep);
+            coreDeep = (1.0 - smoothstep(0.003, uLakeCrackWidth * 1.35, edgeDeep)) * 0.50;
+          }
 
-          // 4. Ultra-Dense Micro-Crazing / Needle Frost Layer
-          vec2 pNano = warpIceCoord(rotateUV(baseIceCoord * 3.85, 1.32) + vec2(53.2, 87.1));
-          float edgeNano = getIceVoronoiEdge(pNano);
-          float coreNano = (1.0 - smoothstep(0.001, uLakeCrackWidth * 0.45, edgeNano)) * 0.48;
+          // 4. Ultra-Dense Micro-Crazing / Needle Frost Layer (near-field < 70m only)
+          float coreNano = 0.0;
+          if (distToCam < 70.0) {
+            vec2 pNano = warpIceCoord(rotateUV(baseIceCoord * 3.85, 1.32) + vec2(53.2, 87.1));
+            float edgeNano = getIceVoronoiEdge(pNano);
+            coreNano = (1.0 - smoothstep(0.001, uLakeCrackWidth * 0.45, edgeNano)) * 0.48 * (1.0 - smoothstep(45.0, 70.0, distToCam));
+          }
 
           // 5. Frozen Air Bubble Inclusions & Crystalline Cavities
           vec2 bubbleGrid = vCustomWorldPos.xz * (uLakeCrackScale * 3.2);

@@ -1,8 +1,7 @@
 import * as THREE from 'three';
 import { getTreeFoliageType } from '../terrain/TreeGenerator.js';
-import { applyTreeLeafShader, LEAF_COLOR_PRESETS } from '../terrain/TreeLeafShader.js';
 
-export { getTreeFoliageType, applyTreeLeafShader, LEAF_COLOR_PRESETS };
+export { getTreeFoliageType };
 
 const MAX_PARTICLES_PER_TYPE = 220;
 
@@ -22,9 +21,8 @@ class FoliageTypePool {
    * @param {string} textureUrl
    * @param {THREE.BufferGeometry} geometry
    * @param {number} [maxCount]
-   * @param {Object} [hslOptions=null] - Optional HSL shader options { hue, saturation, lightness }
    */
-  constructor(scene, textureUrl, geometry, maxCount = MAX_PARTICLES_PER_TYPE, hslOptions = null) {
+  constructor(scene, textureUrl, geometry, maxCount = MAX_PARTICLES_PER_TYPE) {
     this.scene = scene;
     this.geometry = geometry;
     this.maxCount = maxCount;
@@ -45,10 +43,6 @@ class FoliageTypePool {
       side: THREE.DoubleSide,
       fog: true,
     });
-
-    if (hslOptions) {
-      applyTreeLeafShader(this.material, hslOptions);
-    }
 
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, this.maxCount);
     // Explicitly configure Layer 0 for the secondary camera (worldCamera / environment)
@@ -203,13 +197,13 @@ class FoliageTypePool {
       const vy = playerVel.y * 0.8;
       const vz = playerVel.z;
 
-      // Speed-dependent duration: 0.5s at low speeds up to strictly 1.0s max at high speeds
+      // Speed-dependent duration: 1.8s at low speeds up to ~3.2s at high speeds for a slower, natural despawn
       const speedRatio = Math.min(1.0, Math.max(0.0, (speed - 2.5) / 18.0));
-      const totalLifetime = Math.min(1.0, Math.max(0.50, 0.50 + speedRatio * 0.50 + (Math.random() - 0.5) * 0.08));
-      const draftDuration = totalLifetime * 0.65; // follows player for 65% of lifetime (0.32s - 0.65s)
-      const lifetime = totalLifetime; // strictly capped at 1.0s max and 0.5s min
+      const totalLifetime = Math.min(3.4, Math.max(1.7, 1.8 + speedRatio * 1.4 + (Math.random() - 0.5) * 0.25));
+      const draftDuration = totalLifetime * 0.45; // follows player briefly, then flutters in free flight
+      const lifetime = totalLifetime;
 
-      const scale = 0.42 + Math.random() * 0.28;
+      const scale = 0.48 + Math.random() * 0.32;
 
       // Outward peel-off velocity when draft expires
       const driftSpeed = 2.8 + Math.random() * 2.2;
@@ -276,10 +270,10 @@ class FoliageTypePool {
       const vy = 1.0 + Math.random() * 4.0;
       const vz = rz * blastSpeed + playerVel.z * 0.5;
 
-      const totalLifetime = Math.min(1.0, Math.max(0.50, 0.50 + speedRatio * 0.50 + (Math.random() - 0.5) * 0.08));
-      const draftDuration = isSlipstream ? totalLifetime * 0.55 : 0;
+      const totalLifetime = Math.min(3.5, Math.max(1.8, 1.9 + speedRatio * 1.4 + (Math.random() - 0.5) * 0.25));
+      const draftDuration = isSlipstream ? totalLifetime * 0.40 : 0;
       const lifetime = totalLifetime;
-      const scale = 0.44 + Math.random() * 0.35;
+      const scale = 0.52 + Math.random() * 0.38;
 
       const leadFwd = 1.0 + Math.random() * 1.5;
       const leadSide = sideSign * (0.3 + Math.random() * 0.5);
@@ -376,9 +370,9 @@ class FoliageTypePool {
           this._velocities[pIdx + 2] = pvz + dz * pullStrength;
         } else {
           // --- 2. DRIFT-OFF / FREE FLIGHT PHASE ---
-          const dragFactor = Math.max(0, 1.0 - 2.8 * dt);
+          const dragFactor = Math.max(0, 1.0 - 2.2 * dt);
           this._velocities[pIdx + 0] = (this._velocities[pIdx + 0] + this._driftDirs[pIdx + 0] * (2.2 * dt)) * dragFactor;
-          this._velocities[pIdx + 1] -= 3.6 * dt; // gravity
+          this._velocities[pIdx + 1] -= 2.4 * dt; // gentle flutter gravity
           this._velocities[pIdx + 2] = (this._velocities[pIdx + 2] + this._driftDirs[pIdx + 2] * (2.2 * dt)) * dragFactor;
         }
 
@@ -393,14 +387,14 @@ class FoliageTypePool {
         this._rotations[pIdx + 2] += this._rotVelocities[pIdx + 2] * dt;
 
         // Life scale curve:
-        // Pop in quickly in the first 10% of life, stay full size while following,
-        // and smoothly shrink away in the final 28% of life.
+        // Pop in quickly in the first 10% of life, stay full size while drifting,
+        // and gradually shrink away over the final 35% of life.
         const lifeRatio = Math.max(0, this._lifetimes[i] / this._maxLifetimes[i]);
         let scaleMult = 1.0;
         if (lifeRatio > 0.90) {
           scaleMult = (1.0 - lifeRatio) / 0.10; // Pop in
-        } else if (lifeRatio < 0.28) {
-          scaleMult = lifeRatio / 0.28; // Smooth shrink
+        } else if (lifeRatio < 0.35) {
+          scaleMult = lifeRatio / 0.35; // Gradual shrink
         }
 
         const s = this._baseScales[i] * scaleMult;
@@ -454,12 +448,9 @@ class FoliageTypePool {
 
 /**
  * LeafParticleSystem
- * Manages multi-textured leaf particle pools:
- * - Green needles (BranchMat_diffuse_green.png)
- * - Autumn orange needles (BranchMat_diffuse_orange.png)
- * - Snow-covered pine needles (BranchMat_diffuse_snow.png)
+ * Manages leaf and needle particle pools using Pine 4m textures:
+ * - Pine needles (/textures/pine-leaf-diff.png)
  *
- * Automatically spawns matching particle colors based on the tree's foliage texture.
  * Ensures leaves render on top of trees via renderOrder: 100 with depthTest: true.
  */
 export class LeafParticleSystem {
@@ -470,18 +461,19 @@ export class LeafParticleSystem {
   constructor(scene, seed = 1337) {
     this.scene = scene;
     this.seed = seed;
-    this.geometry = new THREE.PlaneGeometry(0.52, 0.52);
+    this.geometry = new THREE.PlaneGeometry(0.85, 0.85);
 
-    // Dedicated pools for each tree texture variant, all using BranchMat_diffuse_green
-    // recolored dynamically with TreeLeafShader presets to match the trees based on the seed
-    const baseLeafTex = '/textures/BranchMat_diffuse_green.png';
+    // Dedicated particle pool for Pine 4m needles
+    const baseLeafTex = '/textures/pine-leaf-diff.png';
+    const pinePool = new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE);
     this.pools = {
-      green: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.green),
-      orange: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.autumnOrange),
-      snow: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.frostSilver),
-      gold: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.goldenLarch),
-      crimson: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.crimsonMaple),
-      spruce: new FoliageTypePool(this.scene, baseLeafTex, this.geometry, MAX_PARTICLES_PER_TYPE, LEAF_COLOR_PRESETS.blueSpruce),
+      pine: pinePool,
+      green: pinePool,
+      orange: pinePool,
+      snow: pinePool,
+      gold: pinePool,
+      crimson: pinePool,
+      spruce: pinePool,
     };
 
     this._lastBrushTime = 0;
@@ -621,14 +613,13 @@ export class LeafParticleSystem {
   }
 
   /**
-   * Registers a new custom foliage particle pool with optional HSL color adjustments.
+   * Registers a new custom foliage particle pool.
    * @param {string} key - Unique pool identifier
-   * @param {string} [textureUrl] - Path to leaf texture (defaults to green needle texture)
-   * @param {Object} [hslOptions=null] - { hue, saturation, lightness }
+   * @param {string} [textureUrl] - Path to leaf texture (defaults to Pine 4m needle texture)
    */
-  addFoliagePool(key, textureUrl = '/textures/BranchMat_diffuse_green.png', hslOptions = null) {
+  addFoliagePool(key, textureUrl = '/textures/pine-leaf-diff.png') {
     if (!this.pools[key]) {
-      this.pools[key] = new FoliageTypePool(this.scene, textureUrl, this.geometry, MAX_PARTICLES_PER_TYPE, hslOptions);
+      this.pools[key] = new FoliageTypePool(this.scene, textureUrl, this.geometry, MAX_PARTICLES_PER_TYPE);
     }
     return this.pools[key];
   }

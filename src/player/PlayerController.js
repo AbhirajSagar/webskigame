@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CharacterModel } from './CharacterModel.js';
 import { LeafParticleSystem } from './LeafParticleSystem.js';
+import { SnowDustSystem } from '../fx/SnowDustSystem.js';
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -46,12 +47,16 @@ export class PlayerController {
    * @param {THREE.Scene} [scene=null]
    * @param {THREE.Camera} [characterCamera=null] - 1st camera (character & snowboard overlay camera)
    */
-  constructor(camera, domElement, terrainManager, scene = null, characterCamera = null) {
+  constructor(camera, domElement, terrainManager, scene = null, characterCamera = null, characterScene = null) {
     this.camera = camera;
     this.characterCamera = characterCamera;
     this.domElement = domElement;
     this.terrainManager = terrainManager;
     this.scene = scene || this.terrainManager?.scene;
+    this.characterScene = characterScene || this.scene;
+    this._frameGroundY = null;
+    this._frameGroundNorm = null;
+    this._scratchGroundNorm = { x: 0, y: 1, z: 0 };
 
     // Physical state (ground contact point on snow: x, y, z)
     this.position = new THREE.Vector3(0, 20, 0);
@@ -61,13 +66,13 @@ export class PlayerController {
     this.mode = 'ski';
 
     // Alpine Ski Physics Tuning
-    this.gravity = 13.5;         // Realistic alpine gravity (m/s²)
+    this.gravity = 17.5;         // Snappy alpine gravity (m/s²) for crisp, non-floaty jumps
     this.pushAccel = 16.0;       // Active poling / skating push speed on flats
     this.tuckBonus = 1.35;       // Downhill acceleration multiplier when tucking (Shift or W)
     this.brakePower = 34.0;      // Hockey-stop snowplow braking deceleration
     this.snowFriction = 0.045;   // Forward glide rolling resistance
     this.carvingGrip = 7.5;      // Lateral ski edge grip (tracks forward into turns)
-    this.jumpForce = 8.8;        // Upward pop off jumps/lips
+    this.jumpForce = 7.4;        // Crisp slope-normal pop off jumps/lips
     this.terminalSpeed = 70.0;   // Max downhill terminal velocity (~250 km/h)
     this.airDrag = 0.025;        // Aerodynamic drag in flight
     this.tuckAirDrag = 0.010;    // Reduced drag when tucking
@@ -82,6 +87,8 @@ export class PlayerController {
     this.altitude = 0.0;
     this.speed = 0.0;
     this.isPlaying = false; // Waits at summit starting gate until user clicks Play
+    this._jumpBufferTimer = 0.0;
+    this._isManualJump = false;
 
     // Fly spectator mode speeds
     this.flySpeed = 45.0;
@@ -142,14 +149,21 @@ export class PlayerController {
 
     this.onModeChange = null;
 
-    // Character & Snowboard Rig (Skateboarding.fbx + board.fbx in world scene)
-    this.character = new CharacterModel(this.scene, this.terrainManager);
+    // Character & Snowboard Rig (Skateboarding.fbx + board.fbx in dedicated characterScene when provided)
+    this.character = new CharacterModel(this.characterScene, this.terrainManager, { worldScene: this.scene });
     // Backward compatibility alias for any existing reference
     this.snowboard = this.character;
 
     // High-speed tree leaf particles (deterministic multi-texture pine needles)
     const seed = this.terrainManager?.seed ?? this.terrainManager?.treeGenerator?.seed ?? 1337;
     this.leafParticles = new LeafParticleSystem(this.scene, seed);
+
+    // Powder snow-dust VFX (cloud-textured plumes on landings, drifts, and sharp turns)
+    this.snowDust = new SnowDustSystem(this.scene, {
+      fogColor: this.scene?.fog?.color,
+      fogNear: this.scene?.fog?.near,
+      fogFar: this.scene?.fog?.far,
+    });
 
     // Stabilized head tracking offset (relative to player ground position)
     this._smoothedHeadOffset = new THREE.Vector3(0, this.focusHeight + 0.25, 0);
@@ -174,6 +188,7 @@ export class PlayerController {
         this.yaw = Math.atan2(-startNorm.x, -startNorm.z);
       }
     }
+    this._prevYaw = this.yaw;
 
     // Position camera initially
     this._updateCamera(0.016, true);
@@ -325,13 +340,34 @@ export class PlayerController {
     } else if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
       this.keys.right = true;
     } else if (e.code === 'Space' || e.key === ' ') {
-      this.keys.jump = true;
-      if (this.isGrounded && this.mode === 'ski') {
-        this.velocity.y = this.jumpForce;
-        this.isGrounded = false;
-        this.airTime = 0.05;
+      if (!this.keys.jump) {
+        this.keys.jump = true;
+        if (this.mode === 'ski' && !this._triggerJump()) {
+          this._jumpBufferTimer = 0.12;
+        }
       }
     }
+  }
+
+  /**
+   * Executes a crisp slope-normal jump impulse so airtime feels grounded on flats and steep chutes alike.
+   * @private
+   */
+  _triggerJump(normal = null) {
+    if (!this.isGrounded || this.mode !== 'ski') return false;
+    const n = normal
+      || this._frameGroundNorm
+      || this.terrainManager?.getNormalAt?.(this.position.x, this.position.z, this._scratchGroundNorm)
+      || { x: 0, y: 1, z: 0 };
+
+    this.velocity.x += n.x * this.jumpForce;
+    this.velocity.y += n.y * this.jumpForce;
+    this.velocity.z += n.z * this.jumpForce;
+    this.isGrounded = false;
+    this.airTime = 0.02;
+    this._jumpBufferTimer = 0.0;
+    this._isManualJump = true;
+    return true;
   }
 
   _onKeyUp(e) {
@@ -585,6 +621,9 @@ export class PlayerController {
         _scratchRightXZ
       );
     }
+    if (this.snowDust) {
+      this.snowDust.update(dt);
+    }
 
     this.speed = this.velocity.length();
 
@@ -592,9 +631,11 @@ export class PlayerController {
     if (!Number.isFinite(this.camera.fov)) this.camera.fov = this.baseFov;
 
     const safeSpeed = Number.isFinite(this.speed) ? this.speed : 0;
-    const groundH = this.terrainManager?.getHeightAt
-      ? this.terrainManager.getHeightAt(this.position.x, this.position.z)
-      : this.position.y;
+    const groundH = (this.isGrounded && this._frameGroundY !== null)
+      ? this._frameGroundY
+      : (this.terrainManager?.getHeightAt
+        ? this.terrainManager.getHeightAt(this.position.x, this.position.z)
+        : this.position.y);
     const altitude = Math.max(0, this.position.y - groundH);
     this.altitude = altitude;
     const speedRatio = Math.min(1.0, safeSpeed / 45.0);
@@ -603,10 +644,13 @@ export class PlayerController {
     const altBonus = Math.sqrt(altRatio) * 12.0;
 
     const targetFov = Math.min(this.maxFov, Math.max(this.minFov, this.baseFov + speedBonus + altBonus));
-    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 3.8, dt);
-    this.camera.updateProjectionMatrix();
+    const nextFov = THREE.MathUtils.damp(this.camera.fov, targetFov, 3.8, dt);
+    if (Math.abs(nextFov - this.camera.fov) > 1e-4) {
+      this.camera.fov = nextFov;
+      this.camera.updateProjectionMatrix();
+    }
 
-    if (this.characterCamera && this.characterCamera.fov !== this.camera.fov) {
+    if (this.characterCamera && Math.abs(this.characterCamera.fov - this.camera.fov) > 1e-4) {
       this.characterCamera.fov = this.camera.fov;
       this.characterCamera.updateProjectionMatrix();
     }
@@ -721,17 +765,33 @@ export class PlayerController {
     _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
     _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
 
+    let yawDelta = this.yaw - (this._prevYaw ?? this.yaw);
+    while (yawDelta > Math.PI) yawDelta -= Math.PI * 2;
+    while (yawDelta < -Math.PI) yawDelta += Math.PI * 2;
+    const turnRate = dt > 0.0001 ? Math.abs(yawDelta) / dt : 0;
+    this._prevYaw = this.yaw;
+
     const isAccelerating = this.keys.forward;
     const isBraking = this.keys.backward;
 
     const currentGroundHeight = this.terrainManager.getHeightAt(this.position.x, this.position.z);
-    const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z);
+    const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z, this._scratchGroundNorm);
+    this._frameGroundY = currentGroundHeight;
+    this._frameGroundNorm = normal;
 
     const prevX = this.position.x;
     const prevZ = this.position.z;
 
+    if (this._jumpBufferTimer > 0) {
+      this._jumpBufferTimer = Math.max(0, this._jumpBufferTimer - dt);
+      if (this.isGrounded) {
+        this._triggerJump(normal);
+      }
+    }
+
     if (this.isGrounded) {
       this.airTime = 0.0;
+      this._isManualJump = false;
 
       // 1. Downhill Gravity Acceleration (F = m * g * sin(theta))
       _scratchGVec.set(0, -this.gravity, 0);
@@ -794,6 +854,26 @@ export class PlayerController {
         const lateralDot = this.velocity.x * _scratchRightXZ.x + this.velocity.z * _scratchRightXZ.z;
         const carveRatio = THREE.MathUtils.clamp(-lateralDot / Math.max(4.0, newSpeed), -1.0, 1.0);
         this.steerBank = carveRatio * 0.35;
+
+        // Emit cloud-textured powder snow dust when drifting, braking, or making sharp turns
+        if (this.snowDust && !isOnIce && newSpeed > 3.5) {
+          const driftScore = Math.max(0, (Math.abs(lateralDot) - 0.85) / 5.0);
+          const sharpTurnScore = (newSpeed > 4.0) ? Math.max(0, (turnRate - 0.42) / 1.8) : 0;
+          const brakeScore = isBraking ? Math.min(1.0, newSpeed / 14.0) : 0;
+          const dustIntensity = Math.min(1.0, Math.max(driftScore, sharpTurnScore, brakeScore));
+          if (dustIntensity > 0.02) {
+            const spraySign = Math.abs(lateralDot) > 0.3 ? Math.sign(lateralDot) : (yawDelta >= 0 ? 1 : -1);
+            this.snowDust.emitCarveDust(
+              dt,
+              this.position,
+              this.velocity,
+              _scratchForwardXZ,
+              _scratchRightXZ,
+              dustIntensity,
+              spraySign
+            );
+          }
+        }
       } else {
         this.steerBank = 0.0;
         // If stopped or nearly stopped and pressing forward or touching on mobile, immediately launch along gaze heading
@@ -856,12 +936,19 @@ export class PlayerController {
           this.position.z = nextZ;
           this.position.y = nextGroundHeight;
           this.velocity.y = requiredSlopeVy;
+          this._frameGroundY = nextGroundHeight;
         }
       }
     } else {
-      // Ballistic airtime trajectory
+      // Ballistic airtime trajectory with snappy asymmetric gravity (heavier fall & variable hop cut)
       this.airTime += dt;
-      this.velocity.y -= this.gravity * dt;
+      let gravMult = 1.15;
+      if (this.velocity.y <= 0) {
+        gravMult = 1.45;
+      } else if (this._isManualJump && !this.keys.jump) {
+        gravMult = 1.75;
+      }
+      this.velocity.y -= this.gravity * gravMult * dt;
 
       const activeAirDrag = isAccelerating ? this.tuckAirDrag : this.airDrag;
       this.velocity.x -= this.velocity.x * activeAirDrag * dt;
@@ -899,10 +986,17 @@ export class PlayerController {
         this.position.y = testGroundY;
         this.isGrounded = true;
         this.airTime = 0.0;
+        this._isManualJump = false;
 
         const landNormal = this.terrainManager.getNormalAt(this.position.x, this.position.z);
         const normalSpeed = this.velocity.dot(landNormal);
         if (normalSpeed < 0) {
+          const landLake = this.terrainManager.heightmap?.getLakeData
+            ? this.terrainManager.heightmap.getLakeData(this.position.x, this.position.z)
+            : null;
+          if (this.snowDust && !(landLake && landLake.isFrozenLake) && normalSpeed < -1.5) {
+            this.snowDust.spawnLanding(this.position, this.velocity, landNormal, Math.abs(normalSpeed), _scratchForwardXZ);
+          }
           this.velocity.addScaledVector(landNormal, -normalSpeed);
           // Visceral camera landing impact compression (absorbs high drop shock)
           this.trauma = Math.min(0.65, Math.abs(normalSpeed) * 0.022);
@@ -1010,6 +1104,7 @@ export class PlayerController {
     }
 
     let momentumDampened = false;
+    let anyCollision = false;
 
     for (let pass = 0; pass < 3; pass++) {
       let hadCollision = false;
@@ -1056,6 +1151,7 @@ export class PlayerController {
 
         if (distSq < minDistanceSq || isSwept) {
           hadCollision = true;
+          anyCollision = true;
           let dist = Math.sqrt(distSq);
           let nx = 0;
           let nz = 0;
@@ -1133,8 +1229,9 @@ export class PlayerController {
       if (!hadCollision) break;
     }
 
-    if (this.isGrounded) {
+    if (anyCollision && this.isGrounded) {
       this.position.y = this.terrainManager.getHeightAt(this.position.x, this.position.z);
+      this._frameGroundY = this.position.y;
     }
   }
 
@@ -1155,6 +1252,10 @@ export class PlayerController {
     if (this.leafParticles) {
       this.leafParticles.dispose(this.scene);
       this.leafParticles = null;
+    }
+    if (this.snowDust) {
+      this.snowDust.dispose(this.scene);
+      this.snowDust = null;
     }
   }
 }

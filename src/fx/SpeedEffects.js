@@ -21,12 +21,15 @@ export class SpeedEffects {
   /**
    * @param {THREE.Camera} camera - World perspective camera
    * @param {THREE.Scene} scene - Primary scene
+   * @param {Object} [options={}]
+   * @param {boolean} [options.muted=true] - Whether procedural wind audio starts muted
    */
-  constructor(camera, scene) {
+  constructor(camera, scene, options = {}) {
     this.camera = camera;
     this.scene = scene;
 
     this.enabled = true;
+    this.muted = options.muted ?? true;
     this.currentSpeed = 0.0;
     this.speedRatio = 0.0; // 0.0 (idle) to 1.0 (terminal speed >= 60 m/s)
 
@@ -195,17 +198,51 @@ export class SpeedEffects {
     this.whistleFilter = null;
     this.rumbleFilter = null;
 
-    // Unlock Web Audio on first user interaction
-    const unlockAudio = () => {
+    // Unlock Web Audio on first user interaction (skipped while muted)
+    this._unlockAudio = () => {
+      if (this.muted) return;
       this._startAudioContext();
-      window.removeEventListener('click', unlockAudio);
-      window.removeEventListener('keydown', unlockAudio);
-      window.removeEventListener('touchstart', unlockAudio);
+      this._removeAudioUnlockListeners();
     };
 
-    window.addEventListener('click', unlockAudio, { once: true });
-    window.addEventListener('keydown', unlockAudio, { once: true });
-    window.addEventListener('touchstart', unlockAudio, { once: true });
+    if (!this.muted) {
+      window.addEventListener('click', this._unlockAudio, { once: true });
+      window.addEventListener('keydown', this._unlockAudio, { once: true });
+      window.addEventListener('touchstart', this._unlockAudio, { once: true });
+    }
+  }
+
+  _removeAudioUnlockListeners() {
+    if (!this._unlockAudio || typeof window === 'undefined') return;
+    window.removeEventListener('click', this._unlockAudio);
+    window.removeEventListener('keydown', this._unlockAudio);
+    window.removeEventListener('touchstart', this._unlockAudio);
+  }
+
+  /**
+   * Mutes or unmutes procedural wind audio.
+   * @param {boolean} muted
+   */
+  setMuted(muted) {
+    this.muted = Boolean(muted);
+    if (this.muted) {
+      if (this.masterGain && this.audioCtx) {
+        this.masterGain.gain.setValueAtTime(0.0, this.audioCtx.currentTime);
+      }
+      if (this.audioCtx && this.audioCtx.state === 'running') {
+        this.audioCtx.suspend().catch(() => {});
+      }
+    } else {
+      if (!this.isAudioReady) {
+        this._startAudioContext();
+      } else if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+    }
+  }
+
+  isMuted() {
+    return this.muted;
   }
 
   _startAudioContext() {
@@ -286,10 +323,13 @@ export class SpeedEffects {
   }
 
   /**
-   * Resumes Web Audio context if suspended.
+   * Resumes Web Audio context if suspended (no-op while muted).
    */
   start() {
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+    if (this.muted) return;
+    if (!this.isAudioReady) {
+      this._startAudioContext();
+    } else if (this.audioCtx && this.audioCtx.state === 'suspended') {
       this.audioCtx.resume();
     }
   }
@@ -401,7 +441,7 @@ export class SpeedEffects {
    * @private
    */
   _updateAudio(isGrounded) {
-    if (!this.isAudioReady || !this.audioCtx) return;
+    if (this.muted || !this.isAudioReady || !this.audioCtx) return;
 
     try {
       const now = this.audioCtx.currentTime;

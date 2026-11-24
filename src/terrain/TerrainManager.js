@@ -298,21 +298,31 @@ export class TerrainManager {
   _updateTreeLODs(px, pz, cameraFrustum = null) {
     const frustum = cameraFrustum || this.cameraFrustum;
     for (const chunk of this.loadedChunks.values()) {
-      const dist = this._getChunkBoundaryDistance(chunk, px, pz);
-      chunk.updateTreeLOD(dist, frustum, this.treeShadowRange);
+      const distSq = this._getChunkBoundaryDistanceSq(chunk, px, pz);
+      chunk.updateTreeLOD(distSq, frustum, this.treeShadowRange, true);
     }
   }
 
   /**
-   * Computes exact Euclidean distance from a world point (px, pz) to the nearest boundary edge of a chunk.
-   * Eliminates the 32m-45m center-point offset delay so LOD switches occur at the exact intended distance.
+   * Computes squared Euclidean distance from a world point (px, pz) to the nearest boundary edge of a chunk.
+   * Avoids Math.hypot / sqrt across 100+ chunks per frame.
    * @private
    */
-  _getChunkBoundaryDistance(chunk, px, pz) {
+  _getChunkBoundaryDistanceSq(chunk, px, pz) {
     const half = chunk.size * 0.5;
     const clampedX = Math.max(chunk.worldCenterX - half, Math.min(px, chunk.worldCenterX + half));
     const clampedZ = Math.max(chunk.worldCenterZ - half, Math.min(pz, chunk.worldCenterZ + half));
-    return Math.hypot(clampedX - px, clampedZ - pz);
+    const dx = clampedX - px;
+    const dz = clampedZ - pz;
+    return dx * dx + dz * dz;
+  }
+
+  /**
+   * Computes exact Euclidean distance from a world point (px, pz) to the nearest boundary edge of a chunk.
+   * @private
+   */
+  _getChunkBoundaryDistance(chunk, px, pz) {
+    return Math.sqrt(this._getChunkBoundaryDistanceSq(chunk, px, pz));
   }
 
   /**
@@ -638,8 +648,8 @@ export class TerrainManager {
   /**
    * Helper to query normal at any world position
    */
-  getNormalAt(worldX, worldZ) {
-    return this.heightmap.getNormal(worldX, worldZ);
+  getNormalAt(worldX, worldZ, out = null) {
+    return this.heightmap.getNormal(worldX, worldZ, 0.85, out);
   }
 
   /**

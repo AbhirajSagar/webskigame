@@ -68,6 +68,7 @@ export class TerrainChunk {
     geometry.rotateX(-Math.PI / 2);
 
     const positionAttr = geometry.attributes.position;
+    const posArr = positionAttr.array;
     const vertexCount = positionAttr.count;
     const normalArray = new Float32Array(vertexCount * 3);
 
@@ -78,21 +79,20 @@ export class TerrainChunk {
     const step = this.size / this.segments;
 
     const lakeDataArray = new Float32Array(vertexCount * 2);
+    const hasLakeData = Boolean(this.heightmap.getLakeData);
 
     // Pass 1: Compute heights, lake factors and elevation bounds
     for (let i = 0; i < vertexCount; i++) {
-      const localX = positionAttr.getX(i);
-      const localZ = positionAttr.getZ(i);
-
-      const worldX = this.worldCenterX + localX;
-      const worldZ = this.worldCenterZ + localZ;
+      const i3 = i * 3;
+      const worldX = this.worldCenterX + posArr[i3];
+      const worldZ = this.worldCenterZ + posArr[i3 + 2];
 
       const worldY = this.heightmap.getHeight(worldX, worldZ);
-      positionAttr.setY(i, worldY);
+      posArr[i3 + 1] = worldY;
 
-      if (this.heightmap.getLakeData) {
+      if (hasLakeData) {
         const lake = this.heightmap.getLakeData(worldX, worldZ);
-        lakeDataArray[i * 2 + 0] = lake.factor;
+        lakeDataArray[i * 2] = lake.factor;
         lakeDataArray[i * 2 + 1] = lake.depth;
       }
 
@@ -100,28 +100,26 @@ export class TerrainChunk {
       if (worldY > maxY) maxY = worldY;
     }
 
-    // Pass 2: Ultra-fast normals
-    // - Lake ice: Pure (0, 1, 0) vertical normal
-    // - Internal vertices: Fast central differences directly from grid (0 noise evaluations!)
-    // - Border vertices: Single-sample finite difference matching adjacent coordinates (guarantees seamless lighting with 79% fewer noise queries)
+    // Pass 2: Ultra-fast normals using direct TypedArray indexing
     for (let iz = 0; iz <= this.segments; iz++) {
       for (let ix = 0; ix <= this.segments; ix++) {
         const i = iz * stride + ix;
+        const i3 = i * 3;
 
         if (lakeDataArray[i * 2] > 0.65) {
-          normalArray[i * 3 + 0] = 0.0;
-          normalArray[i * 3 + 1] = 1.0;
-          normalArray[i * 3 + 2] = 0.0;
+          normalArray[i3] = 0.0;
+          normalArray[i3 + 1] = 1.0;
+          normalArray[i3 + 2] = 0.0;
           continue;
         }
 
-        const worldX = this.worldCenterX + positionAttr.getX(i);
-        const worldZ = this.worldCenterZ + positionAttr.getZ(i);
+        const worldX = this.worldCenterX + posArr[i3];
+        const worldZ = this.worldCenterZ + posArr[i3 + 2];
 
-        const hL = (ix > 0) ? positionAttr.getY(i - 1) : this.heightmap.getHeight(worldX - step, worldZ);
-        const hR = (ix < this.segments) ? positionAttr.getY(i + 1) : this.heightmap.getHeight(worldX + step, worldZ);
-        const hD = (iz > 0) ? positionAttr.getY(i - stride) : this.heightmap.getHeight(worldX, worldZ - step);
-        const hU = (iz < this.segments) ? positionAttr.getY(i + stride) : this.heightmap.getHeight(worldX, worldZ + step);
+        const hL = (ix > 0) ? posArr[(i - 1) * 3 + 1] : this.heightmap.getHeight(worldX - step, worldZ);
+        const hR = (ix < this.segments) ? posArr[(i + 1) * 3 + 1] : this.heightmap.getHeight(worldX + step, worldZ);
+        const hD = (iz > 0) ? posArr[(i - stride) * 3 + 1] : this.heightmap.getHeight(worldX, worldZ - step);
+        const hU = (iz < this.segments) ? posArr[(i + stride) * 3 + 1] : this.heightmap.getHeight(worldX, worldZ + step);
 
         const dhdx = (hR - hL) / (2.0 * step);
         const dhdz = (hU - hD) / (2.0 * step);
@@ -130,36 +128,35 @@ export class TerrainChunk {
         const nz = -dhdz;
         const invLen = 1.0 / Math.sqrt(nx * nx + ny * ny + nz * nz);
 
-        normalArray[i * 3 + 0] = nx * invLen;
-        normalArray[i * 3 + 1] = ny * invLen;
-        normalArray[i * 3 + 2] = nz * invLen;
+        normalArray[i3] = nx * invLen;
+        normalArray[i3 + 1] = ny * invLen;
+        normalArray[i3 + 2] = nz * invLen;
       }
     }
 
     // Pass 3: Perimeter Skirt Generation (Completely eliminates far LOD cracks & T-junction seams)
-    // Extends a 35m vertical downward curtain around the chunk perimeter, seamlessly closing any
-    // chord deviation between chunks of differing LOD resolutions.
     const skirtDepth = 35.0;
-    const perimeterIndices = [];
+    const M = this.segments * 4;
+    const perimeterIndices = new Uint16Array(M);
+    let pPtr = 0;
 
     // 1. North edge (iz = 0): ix from 0 to segments - 1
     for (let ix = 0; ix < this.segments; ix++) {
-      perimeterIndices.push(0 * stride + ix);
+      perimeterIndices[pPtr++] = ix;
     }
     // 2. East edge (ix = segments): iz from 0 to segments - 1
     for (let iz = 0; iz < this.segments; iz++) {
-      perimeterIndices.push(iz * stride + this.segments);
+      perimeterIndices[pPtr++] = iz * stride + this.segments;
     }
     // 3. South edge (iz = segments): ix from segments down to 1
     for (let ix = this.segments; ix > 0; ix--) {
-      perimeterIndices.push(this.segments * stride + ix);
+      perimeterIndices[pPtr++] = this.segments * stride + ix;
     }
     // 4. West edge (ix = 0): iz from segments down to 1
     for (let iz = this.segments; iz > 0; iz--) {
-      perimeterIndices.push(iz * stride + 0);
+      perimeterIndices[pPtr++] = iz * stride;
     }
 
-    const M = perimeterIndices.length;
     const totalVertexCount = vertexCount + M;
 
     const finalPosArray = new Float32Array(totalVertexCount * 3);
@@ -377,20 +374,17 @@ export class TerrainChunk {
 
   /**
    * Updates chunk visibility, tree LOD, and shadow casting dynamically:
-   * 1. View Frustum Culling:
-   *    - Terrain mesh is visible if its bounding box intersects camera view frustum.
-   *    - Trees are visible if in camera view frustum or within shadow casting range.
-   * 2. Proximity-Gated Shadow Casting:
-   *    - Only trees within shadowRange around player cast shadows to keep shadow passes lightweight.
-   * 3. Tree LOD System (Impostors for FAR-AWAY trees only):
-   *    - dist <= 180m: Full 3D conifer models (rich detail, full volume).
-   *    - dist > 200m: Lightweight 4-poly billboard impostors (drastic geometry reduction for distant chunks).
-   *    - 180m to 200m hysteresis deadband prevents boundary thrashing.
-   * @param {number} dist - Distance from player to nearest chunk boundary
+   * 1. View Frustum Culling on terrain, tree bounds, and shadow caster bounds.
+   * 2. Proximity-Gated Shadow Casting within shadowRange.
+   * 3. Tree LOD System with hysteresis:
+   *    - dist <= 115m: Full 3D conifer models
+   *    - dist > 130m: Lightweight 4-poly billboard impostors
+   * @param {number} dist - Distance (or squared distance when isSquared=true) from player to chunk
    * @param {THREE.Frustum|null} [cameraFrustum=null]
    * @param {number} [shadowRange=48] - Maximum distance within which trees cast shadows
+   * @param {boolean} [isSquared=false] - Whether dist is squared distance
    */
-  updateTreeLOD(dist, cameraFrustum = null, shadowRange = this.treeShadowRange || 48) {
+  updateTreeLOD(dist, cameraFrustum = null, shadowRange = this.treeShadowRange || 48, isSquared = false) {
     if (this.isDisposed) return;
 
     // --- 1. Terrain Mesh Visibility (Frustum Culling) ---
@@ -403,17 +397,23 @@ export class TerrainChunk {
 
     if (!this.treeMesh3D && !this.treeMeshImpostor) return;
 
+    const distSq = isSquared ? dist : dist * dist;
+    const shadowRangeSq = shadowRange * shadowRange;
+
     // --- 2. Camera View & Shadow Range Determination ---
     const inCameraView = cameraFrustum ? (this.treeBounds ? cameraFrustum.intersectsBox(this.treeBounds) : true) : true;
-    const isWithinShadowRange = (dist <= shadowRange);
+    const isWithinShadowRange = distSq <= shadowRangeSq;
+    const shadowInView = isWithinShadowRange && (
+      cameraFrustum ? (this.shadowCasterBounds ? cameraFrustum.intersectsBox(this.shadowCasterBounds) : true) : true
+    );
 
-    // --- 3. Tree LOD Selection with Hysteresis (Impostor for far-away trees ONLY) ---
+    // --- 3. Tree LOD Selection with Hysteresis (Impostor beyond 200m) ---
     let targetLOD = this.activeTreeLOD;
     if (this.activeTreeLOD === null) {
-      targetLOD = dist <= 180 ? 0 : 1;
-    } else if (this.activeTreeLOD === 0 && dist > 200) {
+      targetLOD = distSq <= 180 * 180 ? 0 : 1;
+    } else if (this.activeTreeLOD === 0 && distSq > 200 * 200) {
       targetLOD = 1;
-    } else if (this.activeTreeLOD === 1 && dist <= 180) {
+    } else if (this.activeTreeLOD === 1 && distSq <= 180 * 180) {
       targetLOD = 0;
     }
 
@@ -425,19 +425,17 @@ export class TerrainChunk {
 
     // --- 4. Visibility & Shadow Management ---
     if (targetLOD === 0) {
-      // Near / Mid LOD: Full 3D conifer models
-      const want3DVisible = isWithinShadowRange || inCameraView;
+      const want3DVisible = shadowInView || inCameraView;
       if (this.treeMesh3D && this.treeMesh3D.visible !== want3DVisible) {
         this.treeMesh3D.visible = want3DVisible;
       }
-      this._setCastShadowOnObj(this.treeMesh3D, isWithinShadowRange);
+      this._setCastShadowOnObj(this.treeMesh3D, shadowInView);
 
       if (this.treeMeshImpostor && this.treeMeshImpostor.visible) {
         this.treeMeshImpostor.visible = false;
       }
       this._setCastShadowOnObj(this.treeMeshImpostor, false);
     } else {
-      // Far-away LOD: Billboard Impostors ONLY
       if (this.treeMesh3D && this.treeMesh3D.visible) {
         this.treeMesh3D.visible = false;
       }

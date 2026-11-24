@@ -7,6 +7,8 @@ import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
 import { VideoRecorder } from './ui/VideoRecorder.js';
 import { SpeedEffects } from './fx/SpeedEffects.js';
+import { SunLensFlare } from './fx/SunLensFlare.js';
+import { FpsCounter } from './perf/FpsCounter.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -35,6 +37,7 @@ THREE.DefaultLoadingManager.onError = (url) => {
 
 // --- Scene Setup ---
 const scene = new THREE.Scene();
+const characterScene = new THREE.Scene();
 
 // Atmosphere / Horizon Fog to blend distant mountain peaks into the skybox
 const fogColor = new THREE.Color(0xc6cdd5);
@@ -70,7 +73,7 @@ const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
   powerPreference: 'high-performance',
-  preserveDrawingBuffer: true, // Enables clean 60 FPS video capture without black frame hitches
+  preserveDrawingBuffer: false, // Zero-copy swapchain flipping for maximum GPU throughput
 });
 
 function resizeViewport() {
@@ -84,7 +87,7 @@ function resizeViewport() {
   characterCamera.updateProjectionMatrix();
 
   renderer.setSize(width, height);
-  // Clamping pixel ratio to 1.5 balances crisp rendering and high fillrate performance
+  // Clamping pixel ratio to 1.5 preserves crisp edges on pine needles and alpine ridges
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 }
 
@@ -99,19 +102,17 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 
 // --- Lighting & HDRI Skybox ---
-// Soft sky-tinted ambient with balanced intensity ensures shadows are deep, clear, and visible
-const ambientLight = new THREE.AmbientLight(0xd6e5f7, 0.22);
+// Crisp cool sky ambient paired with warm sunlight for clear alpine contrast
+const ambientLight = new THREE.AmbientLight(0xd0e2f7, 0.17);
 ambientLight.layers.enable(0);
 ambientLight.layers.enable(1);
 scene.add(ambientLight);
 
-const sunLight = new THREE.DirectionalLight(0xfff5e6, 2.1);
+const sunLight = new THREE.DirectionalLight(0xffeacc, 2.3);
 sunLight.position.set(130, 190, 90);
 sunLight.castShadow = true;
 sunLight.layers.enable(0);
-sunLight.layers.enable(1);
-sunLight.shadow.camera.layers.enable(0);
-sunLight.shadow.camera.layers.enable(1);
+sunLight.shadow.camera.layers.set(0);
 // Crisp 1024x1024 shadow map: sharp branch and trunk silhouettes on snow
 sunLight.shadow.mapSize.width = 1024;
 sunLight.shadow.mapSize.height = 1024;
@@ -131,8 +132,18 @@ sunLight.shadow.radius = 1.2;
 scene.add(sunLight);
 scene.add(sunLight.target);
 
-// Auto-update shadow map during world render pass
-renderer.shadowMap.autoUpdate = true;
+// Dedicated lightweight lighting for Pass 2 characterScene (avoids world traversal)
+const charAmbientLight = new THREE.AmbientLight(0xd0e2f7, 0.17);
+charAmbientLight.layers.enable(1);
+characterScene.add(charAmbientLight);
+const charSunLight = new THREE.DirectionalLight(0xffeacc, 2.3);
+charSunLight.position.set(130, 190, 90);
+charSunLight.layers.enable(1);
+characterScene.add(charSunLight);
+
+// Update shadow map explicitly when shadow frustum snaps or on cadence (saves redundant shadow passes)
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 
 // Skybox & IBL
 let skyboxTexture = null;
@@ -144,6 +155,7 @@ const skyboxPromise = new Promise((resolve) => {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       scene.background = texture;
       scene.environment = texture;
+      characterScene.environment = texture;
       skyboxTexture = texture;
 
       // Refresh impostor billboard lighting with full HDRI environment once loaded
@@ -166,22 +178,22 @@ const terrainManager = new TerrainManager(scene, {
   chunkSize: 128,        // Expanded chunk size for vast alpine terrain scale (was 96)
   chunkSegments: 22,     // High-fidelity uniform mesh resolution (guarantees zero T-junction cracks)
   renderDistance: 6,     // 768m view distance matching expanded atmosphere fog
-  treeGridStep: 15.0,    // Natural organic conifer spacing across expansive slopes
-  treeDensity: 0.42,     // Balanced organic tree density
+  treeGridStep: 11.0,    // Denser conifer forest spacing across expansive slopes
+  treeDensity: 0.68,     // Lush alpine forest density
   treeShadowRange: 48,   // Proximity shadow range for real-time conifer shadows
   maxBuildsPerFrame: 1,  // Smooth 60fps chunk streaming
   seed: Math.random() * 10000, // Randomized terrain generation seed
-  treeModel: '/models/trees_pack.fbx', // Populate world with coniferous trees pack
+  treeModel: '/models/Pine_4m.glb', // Populate world with authentic Pine 4m conifer trees
   renderer,              // WebGLRenderer for offscreen GPU features
 });
 
 // --- Player Controller (First-Person FPS Skater & Snowboard System) ---
-const player = new PlayerController(worldCamera, canvas, terrainManager, scene, characterCamera);
+const player = new PlayerController(worldCamera, canvas, terrainManager, scene, characterCamera, characterScene);
 
 // --- Alpine Volumetric Particle Cloud System ---
 const cloudSystem = new CloudSystem(scene, {
-  clusterCount: 36,
-  particlesPerCluster: 24, // 864 dense camera-facing billboard particles forming volumetric clouds
+  clusterCount: 64,
+  particlesPerCluster: 32, // 2048 dense camera-facing billboard particles forming volumetric clouds
   wrapRadius: 1350,
   windSpeed: new THREE.Vector3(3.2, 0.0, 1.6),
   sunDirection: new THREE.Vector3(130, 190, 90).normalize(),
@@ -190,8 +202,11 @@ const cloudSystem = new CloudSystem(scene, {
   fogFar: 850,
 });
 
-// --- Speed Effects System (Peripheral Wind Streaks, Speed Vignette, Procedural Wind Audio) ---
-const speedEffects = new SpeedEffects(worldCamera, scene);
+// --- Speed Effects System (Peripheral Wind Streaks, Speed Vignette, Procedural Wind Audio - muted) ---
+const speedEffects = new SpeedEffects(worldCamera, scene, { muted: true });
+
+// --- Procedural Sun Lens Flare (Terrain-Occluded Optical Flare) ---
+const sunLensFlare = new SunLensFlare(scene, sunLight.position);
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
@@ -217,7 +232,8 @@ Promise.race([
       // Pre-generate immediate terrain chunks and compile WebGL shaders
       terrainManager.update(player.position, 0, worldCamera);
       renderer.compile(scene, worldCamera);
-      renderer.compile(scene, characterCamera);
+      renderer.compile(characterScene, characterCamera);
+      renderer.shadowMap.needsUpdate = true;
       renderer.render(scene, worldCamera);
     } catch (err) {
       console.warn('Pre-warming WebGL render warning:', err);
@@ -241,7 +257,10 @@ loadingOverlay.onPlay(() => {
 const videoRecorder = new VideoRecorder(canvas, { fps: 60, bitrate: 16000000 });
 
 // Expose handle for runtime telemetry and debugging (clean recording mode, no HUD UI)
-window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, videoRecorder, speedEffects };
+window.__GAME = { scene, camera: worldCamera, worldCamera, characterCamera, renderer, player, terrainManager, cloudSystem, videoRecorder, speedEffects, sunLensFlare };
+
+// --- Minimal Top-Left FPS Counter ---
+const fpsCounter = new FpsCounter();
 
 // --- Simulation & Render Loop ---
 const clock = new THREE.Clock();
@@ -251,9 +270,13 @@ const sunOffset = new THREE.Vector3(130, 190, 90);
 const forwardDir = new THREE.Vector3();
 const shadowCenter = new THREE.Vector3();
 const shadowTexelSize = (2 * shadowCoverage) / 1024;
+let lastShadowSnapX = Infinity;
+let lastShadowSnapZ = Infinity;
+let shadowFrameCounter = 0;
 
 function animate() {
   requestAnimationFrame(animate);
+  fpsCounter.update();
 
   // Delta time clamping prevents physics tunneling and loading spikes after tab switch / hitches
   const rawDelta = clock.getDelta();
@@ -273,14 +296,19 @@ function animate() {
 
   shadowCenter.copy(player.position).addScaledVector(forwardDir, 16);
 
-  // Discrete texel grid snapping: locks shadow map coordinates to whole texels,
-  // eliminating shadow edge shimmering and crawling artifacts while moving
+  // Discrete texel grid snapping: locks shadow map coordinates to whole texels
   shadowCenter.x = Math.floor(shadowCenter.x / shadowTexelSize) * shadowTexelSize;
   shadowCenter.z = Math.floor(shadowCenter.z / shadowTexelSize) * shadowTexelSize;
 
-  sunLight.position.copy(shadowCenter).add(sunOffset);
-  sunLight.target.position.copy(shadowCenter);
-  sunLight.target.updateMatrixWorld();
+  shadowFrameCounter++;
+  if (shadowCenter.x !== lastShadowSnapX || shadowCenter.z !== lastShadowSnapZ || (shadowFrameCounter % 3) === 0) {
+    lastShadowSnapX = shadowCenter.x;
+    lastShadowSnapZ = shadowCenter.z;
+    sunLight.position.copy(shadowCenter).add(sunOffset);
+    sunLight.target.position.copy(shadowCenter);
+    sunLight.target.updateMatrixWorld();
+    renderer.shadowMap.needsUpdate = true;
+  }
 
   // 2. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, worldCamera);
@@ -288,21 +316,18 @@ function animate() {
   // Update volumetric cloud particles (wind drift, billow pulse, toroidal wrapping around player)
   cloudSystem.update(elapsedTime, player.position);
 
+  // Update sun lens flare projection & mountain occlusion
+  sunLensFlare.update(delta, worldCamera, terrainManager);
+
   // 3. Two-Camera Composite Render:
   // Pass 1: Render world (terrain, trees, shadows, environment) with worldCamera
   renderer.autoClear = true;
   renderer.render(scene, worldCamera);
 
-  // Pass 2: Render character & snowboard always on top with 1st camera (characterCamera)
-  // Disable shadowMap autoUpdate during character overlay pass to avoid redundant re-rendering
-  renderer.shadowMap.autoUpdate = false;
-  const savedBg = scene.background;
-  scene.background = null;
+  // Pass 2: Render isolated character & snowboard overlay on top (skips traversing world chunks)
   renderer.autoClear = false;
   renderer.clearDepth();
-  renderer.render(scene, characterCamera);
-  scene.background = savedBg;
-  renderer.shadowMap.autoUpdate = true;
+  renderer.render(characterScene, characterCamera);
 }
 
 animate();

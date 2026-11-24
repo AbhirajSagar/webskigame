@@ -46,6 +46,7 @@ export class CharacterModel {
    */
   constructor(scene, terrainManager, options = {}) {
     this.scene = scene;
+    this.worldScene = options.worldScene || scene;
     this.terrainManager = terrainManager;
 
     // Root world-space rig containing character, snowboard, and particle emitter
@@ -117,8 +118,8 @@ export class CharacterModel {
     }
     this.sprayMesh.instanceMatrix.needsUpdate = true;
 
-    if (this.scene) {
-      this.scene.add(this.sprayMesh);
+    if (this.worldScene) {
+      this.worldScene.add(this.sprayMesh);
     }
   }
 
@@ -506,7 +507,7 @@ export class CharacterModel {
     // When grounded: align UP vector to terrain surface normal
     // When airborne: smoothly level out to world UP (0, 1, 0)
     if (player.isGrounded) {
-      const rawNorm = this.terrainManager?.getNormalAt(player.position.x, player.position.z) || { x: 0, y: 1, z: 0 };
+      const rawNorm = player._frameGroundNorm || this.terrainManager?.getNormalAt(player.position.x, player.position.z) || { x: 0, y: 1, z: 0 };
       _scratchTargetNormal.set(rawNorm.x, rawNorm.y, rawNorm.z);
       if (_scratchTargetNormal.lengthSq() > 0.0001) {
         _scratchTargetNormal.normalize();
@@ -742,9 +743,11 @@ export class CharacterModel {
   dispose() {
     this._clearSpray();
 
-    if (this.scene) {
-      if (this.group) this.scene.remove(this.group);
-      if (this.sprayMesh) this.scene.remove(this.sprayMesh);
+    if (this.scene && this.group) {
+      this.scene.remove(this.group);
+    }
+    if (this.worldScene && this.sprayMesh) {
+      this.worldScene.remove(this.sprayMesh);
     }
 
     if (this.mixer) {

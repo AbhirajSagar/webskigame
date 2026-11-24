@@ -33,9 +33,9 @@ export class CloudSystem {
   constructor(scene, options = {}) {
     this.scene = scene;
 
-    this.clusterCount = options.clusterCount || 36;
-    this.particlesPerCluster = options.particlesPerCluster || 24;
-    this.totalParticles = this.clusterCount * this.particlesPerCluster; // 864 particles
+    this.clusterCount = options.clusterCount || 64;
+    this.particlesPerCluster = options.particlesPerCluster || 32;
+    this.totalParticles = this.clusterCount * this.particlesPerCluster; // 2048 particles
 
     this.wrapRadius = options.wrapRadius || 1350.0; // 2700m active domain
     this.windSpeed = options.windSpeed || new THREE.Vector3(3.2, 0.0, 1.6); // Gentle alpine wind (m/s)
@@ -44,9 +44,9 @@ export class CloudSystem {
     this.texturePath2 = options.texturePath2 || '/textures/cloud2.png';
     this.texturePath3 = options.texturePath3 || '/textures/cloud3.png';
 
-    // Pure White & Light-Gray Shading (strictly avoiding dark clouds)
+    // Pure White & Light-Gray Shading (strictly avoiding orange/dark tints)
     this.sunDirection = options.sunDirection || new THREE.Vector3(130, 190, 90).normalize();
-    this.sunColor = options.sunColor || new THREE.Color(1.08, 1.07, 1.05); // Radiant warm white sunlight
+    this.sunColor = options.sunColor || new THREE.Color(1.06, 1.06, 1.05); // Crisp bright white sunlight
     this.skyColor = options.skyColor || new THREE.Color(0.97, 0.98, 1.00); // Fresh alpine sky ambient
     this.shadowColor = options.shadowColor || new THREE.Color(0.89, 0.92, 0.95); // Light silver-white (clean & bright)
     this.fogColor = options.fogColor || new THREE.Color(0xc6cdd5);
@@ -179,19 +179,25 @@ export class CloudSystem {
           pos.z = mod(pos.z - uPlayerPos.z + uWrapRadius, domain) - uWrapRadius + uPlayerPos.z;
 
           // 3. Smooth Toroidal Domain Fade-In / Fade-Out (Eliminates ALL pop-in/pop-out)
-          // Starts fading at 60% of wrap radius (~810m), reaches exactly 0.0 at 92% (~1240m).
-          // Wrapped particles arrive at 0.0 opacity and fade in smoothly as they approach the player!
           float distFromPlayerXZ = length(pos.xz - uPlayerPos.xz);
           float domainFade = 1.0 - smoothstep(uWrapRadius * 0.60, uWrapRadius * 0.92, distFromPlayerXZ);
           vDomainFade = domainFade;
 
-          // 4. Position-Anchored World Billboard (Eliminates the obvious camera-facing swivel!)
-          // The billboard faces the camera's position in 3D world space, but does NOT rotate
-          // when the camera turns yaw or pitch. Turning the camera causes ZERO quad rotation!
           vec3 toCamera = cameraPosition - pos;
           float distToCam = length(toCamera);
           vDistToCamera = distToCam;
 
+          // Near-plane soft fade (smoothly dissolves when player flies/skis through clouds)
+          vNearFade = smoothstep(14.0, 50.0, distToCam);
+
+          // Early cull invisible wrapped or too-close quads before fragment rasterization
+          if (domainFade <= 0.002 || vNearFade <= 0.002) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            vWorldPos = pos;
+            return;
+          }
+
+          // 4. Position-Anchored World Billboard (Eliminates camera-turn swivel)
           vec3 norm = (distToCam > 0.001) ? (toCamera / distToCam) : vec3(0.0, 0.0, 1.0);
 
           // World Up vector locked to true vertical
@@ -217,9 +223,6 @@ export class CloudSystem {
 
           vec3 worldPos = pos + quadOffset;
           vWorldPos = worldPos;
-
-          // Near-plane soft fade (smoothly dissolves when player flies/skis through clouds)
-          vNearFade = smoothstep(14.0, 50.0, distToCam);
 
           // Standard transformation into view and clip space:
           gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
@@ -248,6 +251,11 @@ export class CloudSystem {
         varying float vNearFade;
 
         void main() {
+          float horizonFade = 1.0 - smoothstep(uFogNear + 100.0, uFogFar + 120.0, vDistToCamera);
+          float introFade = smoothstep(0.0, 1.5, uTime);
+          float totalFade = vNearFade * vDomainFade * horizonFade * introFade;
+          if (totalFade <= 0.003) discard;
+
           // Select texture based on per-particle variation
           vec4 tex;
           if (vTextureType < 0.6) {
@@ -258,23 +266,20 @@ export class CloudSystem {
             tex = texture2D(uCloudTexture3, vUv);
           }
 
-          if (tex.a < 0.005) discard;
+          if (tex.a < 0.015) discard;
 
           // 1. Pure White Tone Remapping (Zero Dark Clouds)
-          // Maps darker texture areas to clean, soft silver-white (0.90) and tops to brilliant white (1.0).
-          // Strictly prevents any dark, gloomy, or stormy patches.
           float texLum = tex.r;
           float cloudWhiteness = mix(0.90, 1.0, smoothstep(0.35, 0.88, texLum));
 
           // 2. High-Key Atmospheric Lighting
-          // Upper portions catch radiant warm sunlight (1.05 - 1.10); undersides receive fresh sky ambient (0.89 - 0.94).
           float vertGrad = smoothstep(0.10, 0.88, vUv.y);
           vec3 ambientTone = mix(uShadowColor, uSkyColor, vertGrad * 0.45);
           vec3 litTone = mix(ambientTone, uSunColor, vertGrad * 0.40 + 0.60 * vSunFactor);
 
-          // 3. Subtle Forward Scattering (Luminous silver lining when looking toward the sun)
+          // 3. Subtle Forward Scattering (uSunDirection is pre-normalized on CPU)
           vec3 viewDir = normalize(vWorldPos - cameraPosition);
-          float sunDot = dot(normalize(uSunDirection), viewDir);
+          float sunDot = dot(uSunDirection, viewDir);
           float forwardScatter = pow(max(0.0, sunDot), 5.0) * 0.35 * (1.0 - smoothstep(0.35, 0.85, tex.a));
           vec3 silverLining = vec3(1.08, 1.05, 1.00) * forwardScatter;
 
@@ -283,16 +288,6 @@ export class CloudSystem {
           // 4. Atmospheric Fog Color Blend (melts distant clouds into horizon mountain fog)
           float fogFactor = smoothstep(uFogNear, uFogFar, vDistToCamera);
           finalColor = mix(finalColor, uFogColor, fogFactor * 0.70);
-
-          // 5. Seamless Multi-Stage Alpha Fading (Zero Pop-In):
-          // - vNearFade: dissolves smoothly near the camera (no clipping)
-          // - vDomainFade: dissolves to 0.0 at wrap boundary (no border pop-in)
-          // - horizonFade: dissolves smoothly into distant mountain fog
-          // - introFade: smooth fade-in on startup
-          float horizonFade = 1.0 - smoothstep(uFogNear + 100.0, uFogFar + 120.0, vDistToCamera);
-          float introFade = smoothstep(0.0, 1.5, uTime);
-
-          float totalFade = vNearFade * vDomainFade * horizonFade * introFade;
 
           // Boosted alpha curve ensures clouds are solid, crisp, and fluffy in the sky
           float boostedAlpha = pow(tex.a, 0.82);
