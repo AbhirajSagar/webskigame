@@ -18,7 +18,8 @@ export class StatsMonitor {
       gap: 6px;
       pointer-events: none;
       user-select: none;
-      font-family: 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
+      font-family: 'Dosis', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-variant-numeric: tabular-nums;
     `;
 
     // 1. Classic Stats.js Graphs (FPS + Heap panels)

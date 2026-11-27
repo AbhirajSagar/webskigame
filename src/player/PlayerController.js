@@ -111,6 +111,7 @@ export class PlayerController {
     this.focusY = 20 + this.focusHeight;
 
     this.isPointerLocked = false;
+    this.suppressPointerLock = false;
     this.isDragging = false;
     this.prevMouseX = 0;
     this.prevMouseY = 0;
@@ -213,7 +214,7 @@ export class PlayerController {
       this.isDragging = false;
     };
     this._boundCanvasClick = () => {
-      if (this.isPaused) return;
+      if (this.isPaused || this.suppressPointerLock) return;
       requestPointerLockSafe(this.domElement);
     };
     this._boundCanvasMouseDown = (e) => {
@@ -397,6 +398,23 @@ export class PlayerController {
       return;
     }
 
+    if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') {
+      if (!this.isPaused) {
+        this.toggleMode();
+      }
+      return;
+    }
+
+    // Skiing mode: only Mouse + W are active controls
+    if (this.mode === 'ski') {
+      if (e.code === 'KeyW' || e.key === 'w' || e.key === 'W') {
+        this.keyboardForward = true;
+        this.keys.forward = true;
+      }
+      return;
+    }
+
+    // Flying mode: full 6-DOF flight controls preserved
     if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') {
       this.keyboardForward = true;
       this.keys.forward = true;
@@ -413,12 +431,7 @@ export class PlayerController {
     } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift') {
       this.keys.sprint = true;
     } else if (e.code === 'Space' || e.key === ' ') {
-      if (!this.keys.jump) {
-        this.keys.jump = true;
-        if (!this.isPaused && this.mode === 'ski' && !this._triggerJump()) {
-          this._jumpBufferTimer = 0.12;
-        }
-      }
+      this.keys.jump = true;
     }
   }
 
@@ -503,8 +516,10 @@ export class PlayerController {
     if (!Number.isFinite(this.yaw)) this.yaw = 0;
     if (!Number.isFinite(this.pitch)) this.pitch = 0.08;
 
-    // Clamp pitch: max looking down and up in FPS
-    this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
+    // Clamp pitch: full vertical range in fly mode, natural neck range in ski mode
+    const minP = this.mode === 'fly' ? -1.45 : this.minPitch;
+    const maxP = this.mode === 'fly' ? 1.45 : this.maxPitch;
+    this.pitch = Math.max(minP, Math.min(maxP, this.pitch));
   }
 
   setTouchSensitivity(val) {
@@ -620,9 +635,43 @@ export class PlayerController {
     }
   }
 
-  toggleMode() {
-    this.mode = 'ski';
+  setMode(nextMode) {
+    const resolved = nextMode === 'fly' ? 'fly' : 'ski';
+    if (this.mode === resolved) return this.mode;
+
+    this.mode = resolved;
+    this._resetInputState();
+    this.velocity.set(0, 0, 0);
+    this.speed = 0;
+    this.steerBank = 0;
+    this.currentRoll = 0;
+
+    if (resolved === 'fly') {
+      // Seamlessly anchor fly position to current camera eye position
+      if (this.camera?.position && Number.isFinite(this.camera.position.x)) {
+        this.position.copy(this.camera.position);
+      }
+      this.isGrounded = false;
+      this.character?.setVisible(false);
+    } else {
+      const groundH = this.terrainManager?.getHeightAt
+        ? this.terrainManager.getHeightAt(this.position.x, this.position.z)
+        : this.position.y;
+      if (this.position.y < groundH) {
+        this.position.y = groundH;
+      }
+      this.isGrounded = this.position.y <= groundH + 0.25;
+      this.airTime = 0;
+      this._headOffsetInitialized = false;
+      this.character?.setVisible(true);
+      this._updateCamera(0.016, true);
+    }
+
     return this.mode;
+  }
+
+  toggleMode() {
+    return this.setMode(this.mode === 'ski' ? 'fly' : 'ski');
   }
 
   getSpeedKmh() {
@@ -754,9 +803,6 @@ export class PlayerController {
       this._updateCamera(dt, false);
     } else {
       this._updateFlyMode(dt);
-      if (this.character) {
-        this.character.update(dt, this);
-      }
     }
 
     if (this.leafParticles) {
@@ -900,18 +946,10 @@ export class PlayerController {
 
   /**
    * Grounded alpine skiing and snowboarding physics engine
-   * Accelerates with W / Up Arrow; steers smoothly via mouse gaze
+   * Accelerates with W; steers smoothly via mouse gaze
    * @private
    */
   _updateSkiPhysics(dt, forward, right) {
-    // Keyboard carving steering (A/D or Left/Right arrows)
-    if (this.keys.left) {
-      this.yaw += 1.85 * dt;
-    }
-    if (this.keys.right) {
-      this.yaw -= 1.85 * dt;
-    }
-
     _scratchForwardXZ.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
     _scratchRightXZ.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
 
@@ -922,7 +960,7 @@ export class PlayerController {
     this._prevYaw = this.yaw;
 
     const isAccelerating = this.keys.forward;
-    const isBraking = this.keys.backward;
+    const isBraking = false;
 
     const currentGroundHeight = this.terrainManager.getHeightAt(this.position.x, this.position.z);
     const normal = this.terrainManager.getNormalAt(this.position.x, this.position.z, this._scratchGroundNorm);
@@ -931,13 +969,6 @@ export class PlayerController {
 
     const prevX = this.position.x;
     const prevZ = this.position.z;
-
-    if (this._jumpBufferTimer > 0) {
-      this._jumpBufferTimer = Math.max(0, this._jumpBufferTimer - dt);
-      if (this.isGrounded) {
-        this._triggerJump(normal);
-      }
-    }
 
     if (this.isGrounded) {
       this.airTime = 0.0;
@@ -1386,11 +1417,43 @@ export class PlayerController {
   }
 
   /**
-   * Free-flying spectator camera mode
+   * Free-flying 6-DOF spectator camera mode (WASD + Space/E up, Q/C down, Shift sprint)
    * @private
    */
   _updateFlyMode(dt) {
-    // Spectator fly mode disabled; ski physics is active mode
+    const moveSpeed = this.keys.sprint ? this.flySprintSpeed : this.flySpeed;
+
+    _scratchCamEuler.set(-this.pitch, this.yaw, 0, 'YXZ');
+    this.camera.quaternion.setFromEuler(_scratchCamEuler);
+
+    this.camera.getWorldDirection(_scratchForward);
+    _scratchRight.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+
+    if (this.keys.forward) {
+      this.position.addScaledVector(_scratchForward, moveSpeed * dt);
+    }
+    if (this.keys.backward) {
+      this.position.addScaledVector(_scratchForward, -moveSpeed * dt);
+    }
+    if (this.keys.right) {
+      this.position.addScaledVector(_scratchRight, moveSpeed * dt);
+    }
+    if (this.keys.left) {
+      this.position.addScaledVector(_scratchRight, -moveSpeed * dt);
+    }
+    if (this.keys.jump || this.keys.up) {
+      this.position.y += moveSpeed * dt;
+    }
+    if (this.keys.down) {
+      this.position.y -= moveSpeed * dt;
+    }
+
+    this.camera.position.copy(this.position);
+    if (this.characterCamera) {
+      this.characterCamera.position.copy(this.camera.position);
+      this.characterCamera.quaternion.copy(this.camera.quaternion);
+    }
+    this.character?.setVisible(false);
   }
 
   dispose() {

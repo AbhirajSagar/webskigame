@@ -21,11 +21,6 @@ export const DEFAULT_SNOW_CONFIG = {
   snowNormalScale: 4.2,
   snowRoughness: 0.75,
 
-  // Crystal Sparkles (Crisp alpine glints)
-  sparkleScale: 3.4,
-  sparkleIntensity: 1.6,
-  sparkleDistance: 64,
-
   // SSS & Glancing Sheen (Volumetric powder light scattering)
   sssIntensity: 0.65,
   sssColor: '#f9c687',
@@ -133,13 +128,12 @@ export class TerrainMaterialFactory {
       uPeakScourEnd: { value: this.snowConfig.peakScourEnd },
       uPeakScourIntensity: { value: this.snowConfig.peakScourIntensity },
       uSnowRoughness: { value: this.snowConfig.snowRoughness },
-      uSparkleScale: { value: this.snowConfig.sparkleScale },
-      uSparkleIntensity: { value: this.snowConfig.sparkleIntensity },
-      uSparkleDistance: { value: this.snowConfig.sparkleDistance },
       uSSSIntensity: { value: this.snowConfig.sssIntensity },
       uSSSColor: { value: new THREE.Color(this.snowConfig.sssColor) },
       uSheenIntensity: { value: this.snowConfig.sheenIntensity },
       uSheenColor: { value: new THREE.Color(this.snowConfig.sheenColor) },
+      uRockTint: { value: new THREE.Color('#ffffff') },
+      uRockRoughnessScale: { value: 1.0 },
 
       // Emerald Lake Ice Uniforms (Live tweakable via LakeMaterialUI)
       uLakeDeepColor: { value: new THREE.Color(this.lakeConfig.lakeDeepColor) },
@@ -192,13 +186,12 @@ export class TerrainMaterialFactory {
       shader.uniforms.uPeakScourEnd = this.uniforms.uPeakScourEnd;
       shader.uniforms.uPeakScourIntensity = this.uniforms.uPeakScourIntensity;
       shader.uniforms.uSnowRoughness = this.uniforms.uSnowRoughness;
-      shader.uniforms.uSparkleScale = this.uniforms.uSparkleScale;
-      shader.uniforms.uSparkleIntensity = this.uniforms.uSparkleIntensity;
-      shader.uniforms.uSparkleDistance = this.uniforms.uSparkleDistance;
       shader.uniforms.uSSSIntensity = this.uniforms.uSSSIntensity;
       shader.uniforms.uSSSColor = this.uniforms.uSSSColor;
       shader.uniforms.uSheenIntensity = this.uniforms.uSheenIntensity;
       shader.uniforms.uSheenColor = this.uniforms.uSheenColor;
+      shader.uniforms.uRockTint = this.uniforms.uRockTint;
+      shader.uniforms.uRockRoughnessScale = this.uniforms.uRockRoughnessScale;
 
       shader.uniforms.uLakeDeepColor = this.uniforms.uLakeDeepColor;
       shader.uniforms.uLakeMidColor = this.uniforms.uLakeMidColor;
@@ -260,13 +253,12 @@ export class TerrainMaterialFactory {
         uniform float uPeakScourEnd;
         uniform float uPeakScourIntensity;
         uniform float uSnowRoughness;
-        uniform float uSparkleScale;
-        uniform float uSparkleIntensity;
-        uniform float uSparkleDistance;
         uniform float uSSSIntensity;
         uniform vec3 uSSSColor;
         uniform float uSheenIntensity;
         uniform vec3 uSheenColor;
+        uniform vec3 uRockTint;
+        uniform float uRockRoughnessScale;
 
         // Emerald Lake Ice Uniforms (Live tweakable via LakeMaterialUI)
         uniform vec3 uLakeDeepColor;
@@ -317,31 +309,6 @@ export class TerrainMaterialFactory {
             sin(p.y * 0.038 + p.x * 0.022),
             cos(p.x * 0.032 - p.y * 0.026)
           ) * 1.5;
-        }
-
-        // Fast hash for micro-facet grid
-        vec2 hash2(vec2 p) {
-          p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
-          return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
-        }
-
-        // Optimized dynamic ice crystal sparkle with uniform scale
-        float computeSnowSparkle(vec3 worldPos, vec3 viewDir, vec3 sunDir, float distFade) {
-          vec2 gridCoord = worldPos.xz * uSparkleScale;
-          vec2 cellId = floor(gridCoord);
-          vec2 cellFract = fract(gridCoord);
-          vec2 rnd = hash2(cellId);
-
-          vec3 microNormal = normalize(vec3(rnd.x * 0.46, 1.0, rnd.y * 0.46));
-          vec3 halfVec = normalize(sunDir + viewDir);
-
-          float spec = max(0.0, dot(microNormal, halfVec));
-          float sparkle = pow(spec, 90.0);
-
-          float twinkle = sin(uTime * 2.8 + rnd.x * 19.3) * 0.25 + 0.75;
-          float glint = smoothstep(0.50, 0.95, sparkle) * smoothstep(0.42, 0.0, length(cellFract - (vec2(0.5) + rnd * 0.32))) * twinkle;
-
-          return glint * distFade;
         }
 
         // Optimized Dual-Frequency Anti-Tiled Rock Sampling (single-pass past 125m)
@@ -525,7 +492,7 @@ export class TerrainMaterialFactory {
             vec3 macroTint = mix(vec3(0.93, 0.96, 1.04), vec3(1.06, 1.01, 0.94), macroWave * 0.5 + 0.5);
             rockAlbedo = rockAlbedo * macroTint * (1.0 + strata);
 
-            litRockColor = rockAlbedo * mix(0.55, 1.0, rockAO);
+            litRockColor = rockAlbedo * mix(0.55, 1.0, rockAO) * uRockTint;
           } else {
             g_roughX = 0.82; g_roughY = 0.82; g_roughZ = 0.82;
             g_nX = vec3(0.0, 0.0, 1.0); g_nY = vec3(0.0, 0.0, 1.0); g_nZ = vec3(0.0, 0.0, 1.0);
@@ -578,7 +545,11 @@ export class TerrainMaterialFactory {
         `
         #include <roughnessmap_fragment>
 
-        float rockRoughness = g_roughX * g_blending.x + g_roughY * g_blending.y + g_roughZ * g_blending.z;
+        float rockRoughness = clamp(
+          (g_roughX * g_blending.x + g_roughY * g_blending.y + g_roughZ * g_blending.z) * uRockRoughnessScale,
+          0.05,
+          1.0
+        );
         float snowSlope = 1.0 - clamp(vCustomWorldNorm.y, 0.0, 1.0);
         float snowRoughness = mix(uSnowRoughness, uSnowRoughness * 0.70, g_powderCrust * 0.4 + snowSlope * 0.6);
         float terrainRoughness = mix(rockRoughness * 0.90 + 0.10, snowRoughness, g_snowFactor);
@@ -654,14 +625,6 @@ export class TerrainMaterialFactory {
           vec3 L = normalize(uSunDirection);
           float sunLit = clamp(dot(g_worldSnowN, L) * 1.8, 0.0, 1.0);
 
-          // Fast-gated sparkles with dynamic uniform scale, intensity, and distance
-          float distFade = smoothstep(uSparkleDistance, 6.0, g_distToCam);
-          float sparkle = 0.0;
-          if (sunLit > 0.05 && distFade > 0.001) {
-            sparkle = computeSnowSparkle(vCustomWorldPos, V, L, distFade) * sunLit;
-          }
-          vec3 sparkleColor = vec3(1.8, 1.75, 1.6) * (sparkle * uSparkleIntensity);
-
           float oneMinusNdotV = 1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0);
           float om2 = oneMinusNdotV * oneMinusNdotV;
           float vDotNegL = clamp(dot(V, -L), 0.0, 1.0);
@@ -671,7 +634,7 @@ export class TerrainMaterialFactory {
           float fresnel = om2 * om2;
           vec3 sheenGlow = uSheenColor * fresnel * (uSheenIntensity * (sunLit * 0.7 + 0.3));
 
-          outgoingLight += (sparkleColor + sssGlow + sheenGlow) * g_snowFactor;
+          outgoingLight += (sssGlow + sheenGlow) * g_snowFactor;
         }
 
         // Frozen Emerald Lake: Sharp Sun Glint, Luminous Fresnel Sheen & Subsurface Green Glow
@@ -742,15 +705,6 @@ export class TerrainMaterialFactory {
         break;
       case 'snowRoughness':
         this.uniforms.uSnowRoughness.value = value;
-        break;
-      case 'sparkleScale':
-        this.uniforms.uSparkleScale.value = value;
-        break;
-      case 'sparkleIntensity':
-        this.uniforms.uSparkleIntensity.value = value;
-        break;
-      case 'sparkleDistance':
-        this.uniforms.uSparkleDistance.value = value;
         break;
       case 'sssIntensity':
         this.uniforms.uSSSIntensity.value = value;
@@ -862,6 +816,19 @@ export class TerrainMaterialFactory {
    */
   resetSnowConfig() {
     this.setSnowConfig(DEFAULT_SNOW_CONFIG);
+  }
+
+  /**
+   * Update rock cliff tint and roughness scale in real time.
+   * @param {{ tint?: string, roughnessScale?: number }} rockConfig
+   */
+  setRockConfig(rockConfig = {}) {
+    if (rockConfig.tint) {
+      this.uniforms.uRockTint.value.set(rockConfig.tint);
+    }
+    if (rockConfig.roughnessScale !== undefined) {
+      this.uniforms.uRockRoughnessScale.value = Number(rockConfig.roughnessScale);
+    }
   }
 
   /**

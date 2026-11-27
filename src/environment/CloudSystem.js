@@ -134,6 +134,8 @@ export class CloudSystem {
         uFogColor: { value: this.fogColor },
         uFogNear: { value: this.fogNear },
         uFogFar: { value: this.fogFar },
+        uOpacityScale: { value: 1.0 },
+        uAltitudeOffset: { value: 0.0 },
       },
       vertexShader: `
         attribute vec3 aPosition;
@@ -156,6 +158,7 @@ export class CloudSystem {
         uniform vec3 uWind;
         uniform vec3 uPlayerPos;
         uniform float uWrapRadius;
+        uniform float uAltitudeOffset;
 
         void main() {
           vUv = uv;
@@ -169,7 +172,7 @@ export class CloudSystem {
 
           // Subtle organic vertical oscillation (billowing breathing)
           float billow = sin(uTime * 0.32 + aPhase) * 2.2 + cos(uTime * 0.16 + aPhase * 1.4) * 1.5;
-          pos.y += billow;
+          pos.y += billow + uAltitudeOffset;
 
           // 2. Toroidal wrap around player position in world space
           float domain = uWrapRadius * 2.0;
@@ -236,6 +239,7 @@ export class CloudSystem {
         uniform vec3 uFogColor;
         uniform float uFogNear;
         uniform float uFogFar;
+        uniform float uOpacityScale;
 
         varying vec2 vUv;
         varying float vOpacity;
@@ -285,7 +289,7 @@ export class CloudSystem {
 
           // Boosted alpha curve without pow()
           float boostedAlpha = mix(tex.a, sqrt(tex.a), 0.36);
-          float alpha = boostedAlpha * vOpacity * vTotalFade * nearFade;
+          float alpha = boostedAlpha * vOpacity * vTotalFade * nearFade * uOpacityScale;
 
           gl_FragColor = vec4(finalColor, alpha);
         }

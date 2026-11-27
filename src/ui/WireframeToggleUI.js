@@ -63,8 +63,8 @@ export class WireframeToggleUI {
       border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 8px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "SF Mono", Consolas, monospace;
-      font-size: 13px;
+      font-family: 'Dosis', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
       font-weight: 700;
       color: #e2e8f0;
       letter-spacing: 0.02em;

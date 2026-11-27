@@ -19,6 +19,8 @@ export class SunLensFlare {
     this.scene = scene;
     this.sunDir = (sunDirection ? sunDirection.clone() : new THREE.Vector3(130, 190, 90)).normalize();
     this.maxIntensity = options.intensity ?? 0.58;
+    this.enabled = options.enabled ?? true;
+    this.tintColor = new THREE.Color(options.tintColor || '#ffffff');
 
     this.intensity = 0.0;
     this._occlusionTimer = 0.0;
@@ -32,6 +34,7 @@ export class SunLensFlare {
       uIntensity: { value: 0.0 },
       uAspect: { value: 1.0 },
       uRoll: { value: 0.0 },
+      uTint: { value: this.tintColor },
     };
 
     const vertexShader = `
@@ -47,6 +50,7 @@ export class SunLensFlare {
       uniform float uIntensity;
       uniform float uAspect;
       uniform float uRoll;
+      uniform vec3 uTint;
 
       varying vec2 vUv;
 
@@ -121,7 +125,7 @@ export class SunLensFlare {
           flareColor += ghosts * ghostEnvelope;
         }
 
-        gl_FragColor = vec4(flareColor * uIntensity, 1.0);
+        gl_FragColor = vec4(flareColor * uTint * uIntensity, 1.0);
       }
     `;
 
@@ -178,6 +182,26 @@ export class SunLensFlare {
     return false;
   }
 
+  configure({ enabled, intensity, sunDirection, tintColor } = {}) {
+    if (enabled !== undefined) {
+      this.enabled = Boolean(enabled);
+      if (!this.enabled && this.mesh) {
+        this.intensity = 0;
+        this.mesh.visible = false;
+      }
+    }
+    if (intensity !== undefined) {
+      this.maxIntensity = Math.max(0, Number(intensity));
+    }
+    if (sunDirection) {
+      this.sunDir.copy(sunDirection).normalize();
+    }
+    if (tintColor) {
+      this.tintColor.set(tintColor);
+      this.uniforms?.uTint?.value?.set(tintColor);
+    }
+  }
+
   /**
    * Updates sun projection, terrain occlusion, and flare intensity.
    * @param {number} dt
@@ -186,6 +210,11 @@ export class SunLensFlare {
    */
   update(dt, camera, terrainManager = null) {
     if (!camera || !this.mesh) return;
+    if (!this.enabled || this.maxIntensity <= 0.001) {
+      this.intensity = 0;
+      this.mesh.visible = false;
+      return;
+    }
 
     camera.getWorldDirection(_scratchCamFwd);
     const sunDot = _scratchCamFwd.dot(this.sunDir);

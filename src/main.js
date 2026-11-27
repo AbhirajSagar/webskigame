@@ -5,9 +5,16 @@ import { PlayerController } from './player/PlayerController.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { CloudSystem } from './environment/CloudSystem.js';
 import { SpeedEffects } from './fx/SpeedEffects.js';
+import { SunLensFlare } from './fx/SunLensFlare.js';
+import { SnowfallSystem } from './fx/SnowfallSystem.js';
 import { FpsCounter } from './perf/FpsCounter.js';
 import { LightingManager } from './environment/LightingManager.js';
-import { LIGHTING_PRESETS } from './environment/LightingPresets.js';
+import {
+  DEFAULT_PRESET_ID,
+  getAllLightingPresets,
+  LIGHTING_PRESETS,
+} from './environment/LightingPresets.js';
+import { AtmosphereEditorUI } from './ui/AtmosphereEditorUI.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -133,6 +140,10 @@ if (cloudSystem.mesh) {
 // --- Speed Effects System (Peripheral Wind Streaks, Speed Vignette, Procedural Wind Audio - muted) ---
 const speedEffects = new SpeedEffects(worldCamera, scene, { muted: true });
 
+// --- Optical Sun Lens Flare & Atmospheric Snowfall Particles (configured per atmosphere) ---
+const sunLensFlare = new SunLensFlare(scene, new THREE.Vector3(1, 1, 1), { intensity: 0.55, enabled: false });
+const snowfallSystem = new SnowfallSystem(scene);
+
 // --- Lighting & Preset Manager ---
 const lightingManager = new LightingManager({
   scene,
@@ -141,11 +152,13 @@ const lightingManager = new LightingManager({
   terrainManager,
   player,
   cloudSystem,
-  initialPreset: 'default',
+  sunLensFlare,
+  snowfallSystem,
+  initialPreset: DEFAULT_PRESET_ID,
 });
 
-// Skybox & IBL (preload default skybox texture)
-const skyboxPromise = lightingManager.loadSkybox(LIGHTING_PRESETS.default.skybox.path);
+// Skybox & IBL (preload initial skybox texture)
+const skyboxPromise = lightingManager.loadSkybox(LIGHTING_PRESETS[DEFAULT_PRESET_ID].skybox.path);
 
 // Trees and vegetation loading promise from TerrainManager
 const treesPromise = terrainManager.treeGenerator.load();
@@ -181,18 +194,42 @@ Promise.race([
     loadingOverlay.setReady();
 
     // Warm up alternate preset skybox in background for instant switching
-    lightingManager.preloadSkybox(LIGHTING_PRESETS.pastelSunset.skybox.path);
+    lightingManager.preloadSkybox(LIGHTING_PRESETS.goldenHour.skybox.path);
   })
   .catch((err) => {
     console.warn('Asset loader finished with warning:', err);
     loadingOverlay.setReady();
   });
 
+// --- Live Atmosphere & Snow Tuner UI ---
+const atmosphereEditor = new AtmosphereEditorUI({
+  lightingManager,
+  player,
+  captureThumbnail: () => {
+    renderer.autoClear = true;
+    renderer.render(scene, worldCamera);
+    const src = renderer.domElement;
+    const thumbCanvas = document.createElement('canvas');
+    thumbCanvas.width = 640;
+    thumbCanvas.height = 360;
+    const ctx = thumbCanvas.getContext('2d');
+    ctx.drawImage(src, 0, 0, thumbCanvas.width, thumbCanvas.height);
+    return thumbCanvas.toDataURL('image/jpeg', 0.86);
+  },
+  onPresetsChange: () => {
+    loadingOverlay.renderPresets();
+  },
+});
+
 // Launch downhill ski run with the user's chosen lighting preset
-loadingOverlay.onPlay((presetId) => {
-  lightingManager.applyPreset(presetId);
+loadingOverlay.onPlay(async (presetId, { openEditor = false } = {}) => {
+  await lightingManager.applyPreset(presetId);
+  atmosphereEditor.syncFromManager();
   player.start();
   speedEffects.start();
+  if (openEditor) {
+    atmosphereEditor.setOpen(true, { startNewConfig: true });
+  }
 });
 
 // Expose handle for runtime telemetry and debugging
@@ -205,9 +242,13 @@ window.__GAME = {
   player,
   terrainManager,
   cloudSystem,
+  sunLensFlare,
+  snowfallSystem,
   speedEffects,
   lightingManager,
+  atmosphereEditor,
   LIGHTING_PRESETS,
+  getAllLightingPresets,
   setLightingPreset: (id) => lightingManager.applyPreset(id),
 };
 
@@ -238,10 +279,12 @@ function animate() {
   // 3. Stream procedural chunks, update camera frustum culling, tree LODs & dynamic material uniforms
   terrainManager.update(player.position, elapsedTime, worldCamera);
 
-  // 4. Update volumetric clouds when enabled by the active preset
+  // 4. Update volumetric clouds, snowfall, and sun lens flare
   if (cloudSystem.mesh?.visible) {
     cloudSystem.update(elapsedTime, player.position);
   }
+  snowfallSystem.update(elapsedTime, worldCamera.position);
+  sunLensFlare.update(delta, worldCamera, terrainManager);
 
   // 5. Two-Camera Composite Render:
   // Pass 1: Render world (terrain, trees, shadows, environment) with worldCamera

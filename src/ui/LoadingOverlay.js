@@ -1,5 +1,5 @@
 import { requestPointerLockSafe } from '../utils/pointerLock.js';
-import { LIGHTING_PRESETS } from '../environment/LightingPresets.js';
+import { DEFAULT_PRESET_ID, getAllLightingPresets } from '../environment/LightingPresets.js';
 
 /**
  * Triggers browser fullscreen mode with cross-browser compatibility.
@@ -28,8 +28,7 @@ export function triggerBrowserFullscreen(element = document.documentElement) {
 
 /**
  * LoadingOverlay
- * Simple loading bar overlay that transitions to a Play button when loaded,
- * and enters browser fullscreen upon clicking Play.
+ * Displays loading progress and transitions to the atmosphere preset selector.
  */
 export class LoadingOverlay {
   constructor() {
@@ -41,50 +40,118 @@ export class LoadingOverlay {
 
     this.isReady = false;
     this.isPlaying = false;
-    this.selectedPreset = 'default';
+    this.selectedPreset = DEFAULT_PRESET_ID;
     this._playCallbacks = [];
+    this._createCallbacks = [];
+    this._presetButtons = [];
 
-    this._initEvents();
+    this.renderPresets();
+    this._initCreateButton();
   }
 
-  _initEvents() {
+  _initCreateButton() {
+    if (!this.presetSelector) return;
+    const header = this.presetSelector.querySelector('.preset-header');
+    if (!header || document.getElementById('create-preset-btn')) return;
+
+    const createBtn = document.createElement('button');
+    createBtn.type = 'button';
+    createBtn.id = 'create-preset-btn';
+    createBtn.className = 'preset-create-btn';
+    createBtn.textContent = '+ New Atmosphere';
+    createBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this._launchSelection(DEFAULT_PRESET_ID, { openEditor: true });
+    });
+
+    header.appendChild(createBtn);
+  }
+
+  _launchSelection(presetId, { openEditor = false } = {}) {
+    if (this.isPlaying) return;
+    this.isPlaying = true;
+    this.selectedPreset = presetId;
+
+    if (this.overlay) {
+      this.overlay.style.pointerEvents = 'none';
+      this.overlay.classList.add('fade-out');
+      setTimeout(() => {
+        this.overlay.style.display = 'none';
+      }, 300);
+    }
+
+    try {
+      window.focus();
+    } catch (err) {}
+
+    for (const cb of this._playCallbacks) {
+      try {
+        cb(presetId, { openEditor });
+      } catch (err) {
+        console.error('Error in onPlay callback:', err);
+      }
+    }
+
+    if (openEditor) {
+      for (const cb of this._createCallbacks) {
+        try {
+          cb();
+        } catch (err) {
+          console.error('Error in onCreateCustom callback:', err);
+        }
+      }
+    } else {
+      triggerBrowserFullscreen();
+      const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+      if (!isTouchDevice) {
+        const canvas = document.querySelector('#webgl');
+        requestPointerLockSafe(canvas);
+      }
+    }
+  }
+
+  renderPresets() {
     if (!this.presetButtonsContainer) return;
 
     this.presetButtonsContainer.innerHTML = '';
-    const entries = Object.entries(LIGHTING_PRESETS);
+    this._presetButtons = [];
+    const entries = Object.entries(getAllLightingPresets());
+    this.presetButtonsContainer.dataset.count = String(entries.length);
+    if (this.presetSelector) {
+      this.presetSelector.dataset.count = String(entries.length);
+    }
 
     entries.forEach(([presetId, cfg], idx) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'preset-card';
       btn.dataset.preset = presetId;
-      btn.style.setProperty('--accent', cfg.accent || '#38bdf8');
 
       const media = document.createElement('div');
       media.className = 'preset-media';
 
-      const img = document.createElement('img');
-      img.className = 'preset-thumb';
-      img.src = cfg.thumbnail || `/thumbnails/${presetId}.png`;
-      img.alt = cfg.label || presetId;
-      img.loading = 'eager';
-      img.decoding = 'async';
+      if (cfg.thumbnail) {
+        const img = document.createElement('img');
+        img.className = 'preset-thumb';
+        img.src = cfg.thumbnail;
+        img.alt = cfg.label || presetId;
+        img.loading = 'eager';
+        img.decoding = 'async';
+        media.appendChild(img);
+      } else {
+        const fallback = document.createElement('div');
+        fallback.className = 'preset-thumb';
+        const c1 = cfg.fog?.color || cfg.skybox?.solidColor || '#52525b';
+        const c2 = cfg.snow?.shadowColor || '#18181b';
+        const c3 = cfg.snow?.sunlitColor || '#f4f4f5';
+        fallback.style.background = `linear-gradient(170deg, ${c1} 0%, ${c3} 52%, ${c2} 100%)`;
+        media.appendChild(fallback);
+      }
 
       const sheen = document.createElement('div');
       sheen.className = 'preset-media-overlay';
-
-      const badge = document.createElement('span');
-      badge.className = 'preset-badge';
-      badge.textContent = cfg.badge || 'PRESET';
-
-      media.append(img, sheen, badge);
-
-      if (cfg.clouds?.enabled) {
-        const cloudTag = document.createElement('span');
-        cloudTag.className = 'preset-cloud-tag';
-        cloudTag.textContent = 'CLOUDS';
-        media.appendChild(cloudTag);
-      }
+      media.appendChild(sheen);
 
       const body = document.createElement('div');
       body.className = 'preset-body';
@@ -104,12 +171,14 @@ export class LoadingOverlay {
         textWrap.appendChild(sub);
       }
 
-      const cta = document.createElement('span');
-      cta.className = 'preset-cta';
-      cta.textContent = 'DROP IN';
+      const meta = document.createElement('span');
+      meta.className = 'preset-meta';
+      meta.textContent = cfg.isCustom ? 'Custom' : `0${idx + 1}`;
 
-      body.append(textWrap, cta);
+      body.append(textWrap, meta);
       btn.append(media, body);
+      this._presetButtons.push(btn);
+
       if (idx === 0) {
         this._firstPresetBtn = btn;
       }
@@ -119,43 +188,23 @@ export class LoadingOverlay {
           if (typeof e.preventDefault === 'function') e.preventDefault();
           if (typeof e.stopPropagation === 'function') e.stopPropagation();
         }
-
-        if (this.isPlaying) return;
-        this.isPlaying = true;
-        this.selectedPreset = presetId;
-
-        if (this.overlay) {
-          this.overlay.style.pointerEvents = 'none';
-          this.overlay.classList.add('fade-out');
-          setTimeout(() => {
-            this.overlay.style.display = 'none';
-          }, 350);
-        }
-
-        try {
-          window.focus();
-        } catch (err) {}
-
-        for (const cb of this._playCallbacks) {
-          try {
-            cb(presetId);
-          } catch (err) {
-            console.error('Error in onPlay callback:', err);
-          }
-        }
-
-        triggerBrowserFullscreen();
-
-        const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-        if (!isTouchDevice) {
-          const canvas = document.querySelector('#webgl');
-          requestPointerLockSafe(canvas);
-        }
+        this._launchSelection(presetId);
       };
 
       btn.addEventListener('click', handleSelect);
       btn.addEventListener('touchend', handleSelect, { passive: false });
       btn.addEventListener('pointerup', handleSelect);
+      btn.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          const next = this._presetButtons[(idx + 1) % this._presetButtons.length];
+          next?.focus();
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prev = this._presetButtons[(idx - 1 + this._presetButtons.length) % this._presetButtons.length];
+          prev?.focus();
+        }
+      });
 
       this.presetButtonsContainer.appendChild(btn);
     });
@@ -194,12 +243,22 @@ export class LoadingOverlay {
   }
 
   /**
-   * Registers a callback triggered when Play button is clicked
+   * Registers a callback triggered when a preset is launched
    * @param {Function} callback
    */
   onPlay(callback) {
     if (typeof callback === 'function') {
       this._playCallbacks.push(callback);
+    }
+  }
+
+  /**
+   * Registers a callback triggered when Create Custom Atmosphere is clicked
+   * @param {Function} callback
+   */
+  onCreateCustom(callback) {
+    if (typeof callback === 'function') {
+      this._createCallbacks.push(callback);
     }
   }
 }

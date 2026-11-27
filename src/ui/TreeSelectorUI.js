@@ -21,8 +21,8 @@ export class TreeSelectorUI {
       border-radius: 10px;
       padding: 12px 16px;
       color: #e2e8f0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      font-size: 13px;
+      font-family: 'Dosis', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
       user-select: none;
       display: flex;
@@ -47,7 +47,7 @@ export class TreeSelectorUI {
       <div style="font-weight: 700; font-size: 13px; color: #f8fafc; display: flex; align-items: center; gap: 6px;">
         <span>🏔️</span> Environment Models
       </div>
-      <span id="env-status" style="font-size: 10px; font-weight: 600; background: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 2px 7px; border-radius: 4px; font-family: monospace;">Ready</span>
+      <span id="env-status" style="font-size: 11px; font-weight: 700; background: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 2px 7px; border-radius: 4px; font-family: 'Dosis', sans-serif;">Ready</span>
     `;
     this.container.appendChild(header);
 

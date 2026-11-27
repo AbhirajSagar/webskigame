@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Web Alpine Ski Simulator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Dosis:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
@@ -11,12 +14,17 @@
 
     <div id="loading-overlay">
       <div id="loading-bar-container">
-        <div id="loading-bar"></div>
+        <div class="loading-label">Loading terrain</div>
+        <div class="loading-track">
+          <div id="loading-bar"></div>
+        </div>
       </div>
       <div id="preset-selector" style="display: none;">
         <div class="preset-header">
-          <div class="preset-eyebrow">FREERIDE ALPINE SIMULATOR</div>
-          <div id="preset-title">SELECT YOUR ATMOSPHERE</div>
+          <div class="preset-header-copy">
+            <span class="preset-eyebrow">Alpine Freeride</span>
+            <h1 id="preset-title">Atmosphere</h1>
+          </div>
         </div>
         <div id="preset-buttons"></div>
       </div>

@@ -1,6 +1,18 @@
 import * as THREE from 'three';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
-import { LIGHTING_PRESETS, cloneLightingPreset } from './LightingPresets.js';
+import {
+  DEFAULT_PRESET_ID,
+  getAllLightingPresets,
+  cloneLightingPreset,
+} from './LightingPresets.js';
+import { DEFAULT_SNOW_CONFIG, DEFAULT_LAKE_CONFIG } from '../terrain/TerrainMaterial.js';
+
+const TONE_MAPPING_MAP = {
+  aces: THREE.ACESFilmicToneMapping,
+  agx: THREE.AgXToneMapping,
+  neutral: THREE.NeutralToneMapping,
+  reinhard: THREE.ReinhardToneMapping,
+};
 
 function directionFromAngles(azimuthDeg, elevationDeg, out = new THREE.Vector3()) {
   const az = THREE.MathUtils.degToRad(azimuthDeg);
@@ -24,17 +36,32 @@ export class LightingManager {
    * @param {import('../player/PlayerController.js').PlayerController} deps.player
    * @param {string} [deps.initialPreset='default']
    */
-  constructor({ scene, characterScene, renderer, terrainManager, player, cloudSystem = null, initialPreset = 'default' }) {
+  constructor({
+    scene,
+    characterScene,
+    renderer,
+    terrainManager,
+    player,
+    cloudSystem = null,
+    sunLensFlare = null,
+    snowfallSystem = null,
+    initialPreset = DEFAULT_PRESET_ID,
+  }) {
     this.scene = scene;
     this.characterScene = characterScene;
     this.renderer = renderer;
     this.terrainManager = terrainManager;
     this.player = player;
     this.cloudSystem = cloudSystem;
+    this.sunLensFlare = sunLensFlare;
+    this.snowfallSystem = snowfallSystem;
 
-    this.activePresetId = LIGHTING_PRESETS[initialPreset] ? initialPreset : 'default';
+    const allPresets = getAllLightingPresets();
+    this.activePresetId = allPresets[initialPreset] ? initialPreset : DEFAULT_PRESET_ID;
     this.state = cloneLightingPreset(this.activePresetId);
     this.skyboxTexture = null;
+    this._gradientCanvas = null;
+    this._gradientTexture = null;
     this._loadedSkyboxes = new Map();
 
     this._sunDir = new THREE.Vector3();
@@ -46,9 +73,18 @@ export class LightingManager {
     this._lastShadowSnapX = Infinity;
     this._lastShadowSnapZ = Infinity;
     this._shadowFrameCounter = 0;
+    this._rebakeTimer = null;
 
     this._initLights();
     this._applySettings();
+  }
+
+  _scheduleRebakeTreeImpostors(delayMs = 220) {
+    if (this._rebakeTimer) clearTimeout(this._rebakeTimer);
+    this._rebakeTimer = setTimeout(() => {
+      this._rebakeTimer = null;
+      this._rebakeTreeImpostors();
+    }, delayMs);
   }
 
   _initLights() {
@@ -108,6 +144,7 @@ export class LightingManager {
     this._baseFog = this.scene.fog && this.scene.fog.isFog
       ? this.scene.fog
       : new THREE.Fog(this.state.fog.color, this.state.fog.near, this.state.fog.far);
+    this._expFog = new THREE.FogExp2(this.state.fog.color, this.state.fog.density ?? 0.0042);
   }
 
   /**
@@ -204,13 +241,66 @@ export class LightingManager {
     });
   }
 
+  _applyGradientSkybox() {
+    if (!this._gradientCanvas) {
+      this._gradientCanvas = document.createElement('canvas');
+      this._gradientCanvas.width = 512;
+      this._gradientCanvas.height = 256;
+      this._gradientTexture = new THREE.CanvasTexture(this._gradientCanvas);
+      this._gradientTexture.mapping = THREE.EquirectangularReflectionMapping;
+      this._gradientTexture.colorSpace = THREE.SRGBColorSpace;
+    }
+
+    const { skybox } = this.state;
+    const w = this._gradientCanvas.width;
+    const h = this._gradientCanvas.height;
+    const ctx = this._gradientCanvas.getContext('2d');
+
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0.0, skybox.zenithColor || '#1d4ed8');
+    grad.addColorStop(0.49, skybox.horizonColor || '#fde68a');
+    grad.addColorStop(0.55, skybox.horizonColor || '#fde68a');
+    grad.addColorStop(1.0, skybox.groundColor || '#334155');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    const glowInt = Math.max(0, Number(skybox.sunGlowIntensity ?? 0));
+    if (glowInt > 0.005) {
+      const sunDir = this._sunDir;
+      const u = Math.atan2(sunDir.z, sunDir.x) / (Math.PI * 2) + 0.5;
+      const v = Math.asin(THREE.MathUtils.clamp(sunDir.y, -1, 1)) / Math.PI + 0.5;
+      const cx = ((u % 1) + 1) % 1 * w;
+      const cy = (1 - v) * h;
+      const radius = Math.max(12, Number(skybox.sunGlowSize ?? 0.22) * h);
+      const glowColor = new THREE.Color(skybox.sunGlowColor || '#fffbeb');
+      const rgb = `${Math.round(glowColor.r * 255)}, ${Math.round(glowColor.g * 255)}, ${Math.round(glowColor.b * 255)}`;
+
+      for (const offsetX of [-w, 0, w]) {
+        const sx = cx + offsetX;
+        const radial = ctx.createRadialGradient(sx, cy, 0, sx, cy, radius);
+        radial.addColorStop(0.0, `rgba(${rgb}, ${Math.min(1, glowInt)})`);
+        radial.addColorStop(0.25, `rgba(${rgb}, ${Math.min(1, glowInt * 0.55)})`);
+        radial.addColorStop(1.0, `rgba(${rgb}, 0)`);
+        ctx.fillStyle = radial;
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+
+    this._gradientTexture.needsUpdate = true;
+    this.skyboxTexture = this._gradientTexture;
+    this.scene.background = this._gradientTexture;
+    this.scene.environment = this._gradientTexture;
+    this.characterScene.environment = this._gradientTexture;
+  }
+
   /**
-   * Switches to a named preset from LIGHTING_PRESETS.
+   * Switches to a named preset from LIGHTING_PRESETS or saved custom presets.
    * @param {string} presetId
    * @returns {Promise<void>}
    */
-  async applyPreset(presetId = 'default') {
-    const resolvedId = LIGHTING_PRESETS[presetId] ? presetId : 'default';
+  async applyPreset(presetId = DEFAULT_PRESET_ID) {
+    const allPresets = getAllLightingPresets();
+    const resolvedId = allPresets[presetId] ? presetId : DEFAULT_PRESET_ID;
     const prevSkybox = { ...this.state.skybox };
     this.activePresetId = resolvedId;
     this.state = cloneLightingPreset(resolvedId);
@@ -228,6 +318,9 @@ export class LightingManager {
       this.scene.environment = null;
       this.characterScene.environment = null;
       this._rebakeTreeImpostors();
+    } else if (this.state.skybox.mode === 'gradient') {
+      this._applyGradientSkybox();
+      this._rebakeTreeImpostors();
     } else if (skyChanged) {
       await this.loadSkybox(this.state.skybox.path);
     } else {
@@ -235,8 +328,86 @@ export class LightingManager {
     }
   }
 
+  /**
+   * Deep-merges and applies a partial or full custom lighting config JSON object in real time.
+   * @param {Object} customConfig
+   * @param {{ immediateRebake?: boolean }} [options]
+   * @returns {Promise<void>}
+   */
+  async applyCustomConfig(customConfig, options = {}) {
+    if (!customConfig || typeof customConfig !== 'object') return;
+    const prevSkybox = { ...this.state.skybox };
+
+    const sections = [
+      'skybox',
+      'environment',
+      'ambient',
+      'hemisphere',
+      'directional',
+      'clouds',
+      'fog',
+      'lensFlare',
+      'snowfall',
+      'snow',
+      'rock',
+      'lake',
+    ];
+    for (const key of sections) {
+      if (customConfig[key] && typeof customConfig[key] === 'object') {
+        this.state[key] = { ...this.state[key], ...customConfig[key] };
+      }
+    }
+
+    this._applySettings();
+
+    const skyChanged = prevSkybox.mode !== this.state.skybox.mode
+      || prevSkybox.path !== this.state.skybox.path
+      || prevSkybox.solidColor !== this.state.skybox.solidColor
+      || !this.skyboxTexture;
+
+    if (this.state.skybox.mode === 'solid') {
+      this.skyboxTexture = null;
+      this.scene.background = new THREE.Color(this.state.skybox.solidColor);
+      this.scene.environment = null;
+      this.characterScene.environment = null;
+      if (options.immediateRebake) this._rebakeTreeImpostors();
+      else this._scheduleRebakeTreeImpostors();
+    } else if (this.state.skybox.mode === 'gradient') {
+      this._applyGradientSkybox();
+      if (options.immediateRebake) this._rebakeTreeImpostors();
+      else this._scheduleRebakeTreeImpostors();
+    } else if (skyChanged) {
+      await this.loadSkybox(this.state.skybox.path);
+    } else if (options.immediateRebake) {
+      this._rebakeTreeImpostors();
+    } else {
+      this._scheduleRebakeTreeImpostors();
+    }
+  }
+
+  /**
+   * Returns a JSON-serializable snapshot of the current active lighting & snow config.
+   * @returns {Object}
+   */
+  exportConfig() {
+    return JSON.parse(JSON.stringify(this.state));
+  }
+
   _applySettings() {
-    const { skybox, environment, ambient, hemisphere, directional, clouds, fog, snow } = this.state;
+    const {
+      skybox,
+      environment,
+      ambient,
+      hemisphere,
+      directional,
+      clouds,
+      fog,
+      lensFlare,
+      snowfall,
+      snow,
+      rock,
+      lake,
+    } = this.state;
 
     const rotRad = THREE.MathUtils.degToRad(skybox.backgroundRotationDeg || 0);
     if (this.scene.backgroundRotation) {
@@ -246,6 +417,10 @@ export class LightingManager {
       this.scene.environmentRotation.set(0, rotRad, 0);
     }
 
+    const nextToneMapping = TONE_MAPPING_MAP[environment.toneMapping] ?? THREE.ACESFilmicToneMapping;
+    if (this.renderer.toneMapping !== nextToneMapping) {
+      this.renderer.toneMapping = nextToneMapping;
+    }
     this.renderer.toneMappingExposure = environment.toneMappingExposure;
     this.scene.environmentIntensity = environment.environmentIntensity;
     this.characterScene.environmentIntensity = environment.environmentIntensity;
@@ -294,19 +469,31 @@ export class LightingManager {
     this._lastShadowSnapX = Infinity;
     this._lastShadowSnapZ = Infinity;
 
+    const isExpFog = fog.type === 'exp2';
     if (fog.enabled) {
-      this._baseFog.color.set(fog.color);
-      this._baseFog.near = fog.near;
-      this._baseFog.far = Math.max(fog.near + 10, fog.far);
-      this.scene.fog = this._baseFog;
+      if (isExpFog) {
+        this._expFog.color.set(fog.color);
+        this._expFog.density = Math.max(0.0001, Number(fog.density ?? 0.0042));
+        this.scene.fog = this._expFog;
+      } else {
+        this._baseFog.color.set(fog.color);
+        this._baseFog.near = fog.near;
+        this._baseFog.far = Math.max(fog.near + 10, fog.far);
+        this.scene.fog = this._baseFog;
+      }
     } else {
       this.scene.fog = null;
     }
+
+    const dustNear = fog.enabled ? (isExpFog ? 25 : fog.near) : 99999;
+    const dustFar = fog.enabled
+      ? (isExpFog ? Math.max(80, Math.round(2.4 / Math.max(0.0005, Number(fog.density ?? 0.0042)))) : Math.max(fog.near + 10, fog.far))
+      : 100000;
     if (this.player?.snowDust?.material?.uniforms) {
       const u = this.player.snowDust.material.uniforms;
       u.uFogColor.value.set(fog.color);
-      u.uFogNear.value = fog.enabled ? fog.near : 99999;
-      u.uFogFar.value = fog.enabled ? Math.max(fog.near + 10, fog.far) : 100000;
+      u.uFogNear.value = dustNear;
+      u.uFogFar.value = dustFar;
     }
 
     if (this.cloudSystem?.mesh) {
@@ -319,7 +506,23 @@ export class LightingManager {
         cu.uSkyColor.value.set(clouds.skyColor || '#f7faff');
         cu.uShadowColor.value.set(clouds.shadowColor || '#dfe6ef');
         cu.uFogColor.value.set(fog.color);
+        if (cu.uOpacityScale) cu.uOpacityScale.value = Number(clouds.opacity ?? 1.0);
+        if (cu.uAltitudeOffset) cu.uAltitudeOffset.value = Number(clouds.altitudeOffset ?? 0);
+        if (cu.uWind) cu.uWind.value.set(Number(clouds.windSpeedX ?? 3.2), 0.0, Number(clouds.windSpeedZ ?? 1.6));
       }
+    }
+
+    if (this.sunLensFlare) {
+      this.sunLensFlare.configure({
+        enabled: Boolean(lensFlare?.enabled),
+        intensity: Number(lensFlare?.intensity ?? 0.55),
+        sunDirection: this._sunDir,
+        tintColor: lensFlare?.tintColor || '#ffffff',
+      });
+    }
+
+    if (this.snowfallSystem) {
+      this.snowfallSystem.configure(snowfall || { enabled: false });
     }
 
     const matFactory = this.terrainManager?.materialFactory;
@@ -333,7 +536,33 @@ export class LightingManager {
         sssIntensity: snow.sssIntensity,
         sheenColor: snow.sheenColor,
         sheenIntensity: snow.sheenIntensity,
+        slopeMin: snow.slopeMin ?? DEFAULT_SNOW_CONFIG.slopeMin,
+        slopeMax: snow.slopeMax ?? DEFAULT_SNOW_CONFIG.slopeMax,
+        peakScourStart: snow.peakScourStart ?? DEFAULT_SNOW_CONFIG.peakScourStart,
+        peakScourEnd: snow.peakScourEnd ?? DEFAULT_SNOW_CONFIG.peakScourEnd,
+        peakScourIntensity: snow.peakScourIntensity ?? DEFAULT_SNOW_CONFIG.peakScourIntensity,
+        snowNormalScale: snow.snowNormalScale ?? DEFAULT_SNOW_CONFIG.snowNormalScale,
+        snowRoughness: snow.snowRoughness ?? DEFAULT_SNOW_CONFIG.snowRoughness,
       });
+      if (matFactory.setRockConfig) {
+        matFactory.setRockConfig({
+          tint: rock?.tint || '#ffffff',
+          roughnessScale: rock?.roughnessScale ?? 1.0,
+        });
+      }
+      if (matFactory.setLakeConfig) {
+        matFactory.setLakeConfig({
+          lakeDeepColor: lake?.lakeDeepColor ?? DEFAULT_LAKE_CONFIG.lakeDeepColor,
+          lakeMidColor: lake?.lakeMidColor ?? DEFAULT_LAKE_CONFIG.lakeMidColor,
+          lakeBrightColor: lake?.lakeBrightColor ?? DEFAULT_LAKE_CONFIG.lakeBrightColor,
+          lakeFrostColor: lake?.lakeFrostColor ?? DEFAULT_LAKE_CONFIG.lakeFrostColor,
+          lakeRoughness: lake?.lakeRoughness ?? DEFAULT_LAKE_CONFIG.lakeRoughness,
+          lakeMetalness: lake?.lakeMetalness ?? DEFAULT_LAKE_CONFIG.lakeMetalness,
+          lakeFresnel: lake?.lakeFresnel ?? DEFAULT_LAKE_CONFIG.lakeFresnel,
+          lakeSSS: lake?.lakeSSS ?? DEFAULT_LAKE_CONFIG.lakeSSS,
+          lakeNormalRipples: lake?.lakeNormalRipples ?? DEFAULT_LAKE_CONFIG.lakeNormalRipples,
+        });
+      }
       if (matFactory.sharedDistantMaterial) {
         matFactory.sharedDistantMaterial.color.set(snow.distantColor);
       }
