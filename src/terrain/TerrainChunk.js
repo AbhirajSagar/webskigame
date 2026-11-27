@@ -135,7 +135,7 @@ export class TerrainChunk {
     }
 
     // Pass 3: Perimeter Skirt Generation (Completely eliminates far LOD cracks & T-junction seams)
-    const skirtDepth = 35.0;
+    const skirtDepth = 45.0;
     const M = this.segments * 4;
     const perimeterIndices = new Uint16Array(M);
     let pPtr = 0;
@@ -384,12 +384,29 @@ export class TerrainChunk {
    * @param {number} [shadowRange=48] - Maximum distance within which trees cast shadows
    * @param {boolean} [isSquared=false] - Whether dist is squared distance
    */
-  updateTreeLOD(dist, cameraFrustum = null, shadowRange = this.treeShadowRange || 48, isSquared = false) {
+  updateTreeLOD(dist, cameraFrustum = null, shadowRange = this.treeShadowRange || 48, isSquared = false, maxViewDistSq = Infinity) {
     if (this.isDisposed) return;
 
-    // --- 1. Terrain Mesh Visibility (Frustum Culling) ---
+    const distSq = isSquared ? dist : dist * dist;
+    const withinViewRange = distSq <= maxViewDistSq;
+
+    if (!withinViewRange) {
+      if (this.mesh && this.mesh.visible) this.mesh.visible = false;
+      if (this.treeMesh3D && this.treeMesh3D.visible) {
+        this.treeMesh3D.visible = false;
+        this._setCastShadowOnObj(this.treeMesh3D, false);
+      }
+      if (this.treeMeshImpostor && this.treeMeshImpostor.visible) {
+        this.treeMeshImpostor.visible = false;
+      }
+      return;
+    }
+
+    // --- 1. Terrain Mesh Visibility (Frustum + Horizon Fog Distance Culling) ---
     if (this.mesh) {
-      const terrainInView = cameraFrustum ? (this.terrainBounds ? cameraFrustum.intersectsBox(this.terrainBounds) : true) : true;
+      const terrainInView = cameraFrustum
+        ? (this.terrainBounds ? cameraFrustum.intersectsBox(this.terrainBounds) : true)
+        : true;
       if (this.mesh.visible !== terrainInView) {
         this.mesh.visible = terrainInView;
       }
@@ -397,23 +414,24 @@ export class TerrainChunk {
 
     if (!this.treeMesh3D && !this.treeMeshImpostor) return;
 
-    const distSq = isSquared ? dist : dist * dist;
     const shadowRangeSq = shadowRange * shadowRange;
 
     // --- 2. Camera View & Shadow Range Determination ---
-    const inCameraView = cameraFrustum ? (this.treeBounds ? cameraFrustum.intersectsBox(this.treeBounds) : true) : true;
+    const inCameraView = cameraFrustum
+      ? (this.treeBounds ? cameraFrustum.intersectsBox(this.treeBounds) : true)
+      : true;
     const isWithinShadowRange = distSq <= shadowRangeSq;
     const shadowInView = isWithinShadowRange && (
       cameraFrustum ? (this.shadowCasterBounds ? cameraFrustum.intersectsBox(this.shadowCasterBounds) : true) : true
     );
 
-    // --- 3. Tree LOD Selection with Hysteresis (Impostor beyond 200m) ---
+    // --- 3. Tree LOD Selection with Hysteresis (Full 3D <= 90m, Impostor > 105m) ---
     let targetLOD = this.activeTreeLOD;
     if (this.activeTreeLOD === null) {
-      targetLOD = distSq <= 180 * 180 ? 0 : 1;
-    } else if (this.activeTreeLOD === 0 && distSq > 200 * 200) {
+      targetLOD = distSq <= 90 * 90 ? 0 : 1;
+    } else if (this.activeTreeLOD === 0 && distSq > 105 * 105) {
       targetLOD = 1;
-    } else if (this.activeTreeLOD === 1 && distSq <= 180 * 180) {
+    } else if (this.activeTreeLOD === 1 && distSq <= 90 * 90) {
       targetLOD = 0;
     }
 

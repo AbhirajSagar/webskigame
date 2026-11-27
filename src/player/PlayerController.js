@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { CharacterModel } from './CharacterModel.js';
 import { LeafParticleSystem } from './LeafParticleSystem.js';
 import { SnowDustSystem } from '../fx/SnowDustSystem.js';
+import { requestPointerLockSafe } from '../utils/pointerLock.js';
+
+// Maximum plausible CSS-pixel delta for a single mousemove event; larger jumps are browser cursor-warp glitches.
+const MAX_SINGLE_MOUSE_DELTA = 250;
 
 // Pre-allocated scratch objects for zero runtime heap allocations in 60 FPS physics loop
 const _scratchForward = new THREE.Vector3();
@@ -87,6 +91,8 @@ export class PlayerController {
     this.altitude = 0.0;
     this.speed = 0.0;
     this.isPlaying = false; // Waits at summit starting gate until user clicks Play
+    this.isPaused = false;
+    this._pauseCamOffset = new THREE.Vector3();
     this._jumpBufferTimer = 0.0;
     this._isManualJump = false;
 
@@ -108,6 +114,7 @@ export class PlayerController {
     this.isDragging = false;
     this.prevMouseX = 0;
     this.prevMouseY = 0;
+    this._ignoreNextPointerMoves = 0;
 
     // Dynamic Camera FOV parameters (bounded between minFov and maxFov)
     this.baseFov = camera.fov || 65;
@@ -129,6 +136,9 @@ export class PlayerController {
       left: false,
       right: false,
       jump: false,
+      up: false,
+      down: false,
+      sprint: false,
     };
     this.keyboardForward = false;
     this.touchForward = false;
@@ -179,6 +189,7 @@ export class PlayerController {
     // Place initial rider high in the sky at drop-in elevation
     const startHeight = this.terrainManager.getHeightAt(0, 0);
     this.position.set(0, startHeight + this.initialDropHeight, 0);
+    this.altitude = this.initialDropHeight;
     this.focusY = this.position.y + this.focusHeight;
 
     // Automatically align initial heading downhill along the starting slope
@@ -195,36 +206,91 @@ export class PlayerController {
   }
 
   _initInput() {
-    window.addEventListener('keydown', (e) => this._onKeyDown(e));
-    window.addEventListener('keyup', (e) => this._onKeyUp(e));
-
-    this.domElement.addEventListener('click', () => {
-      const p = this.domElement.requestPointerLock?.();
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => {});
-      }
-    });
-
-    document.addEventListener('pointerlockchange', () => {
-      this.isPointerLocked = document.pointerLockElement === this.domElement;
-    });
-
-    this.domElement.addEventListener('mousedown', (e) => {
+    this._boundKeyDown = (e) => this._onKeyDown(e);
+    this._boundKeyUp = (e) => this._onKeyUp(e);
+    this._boundMouseMove = (e) => this._onMouseMove(e);
+    this._boundMouseUp = () => {
+      this.isDragging = false;
+    };
+    this._boundCanvasClick = () => {
+      if (this.isPaused) return;
+      requestPointerLockSafe(this.domElement);
+    };
+    this._boundCanvasMouseDown = (e) => {
       if (e.button === 0 && !this.isPointerLocked) {
         this.isDragging = true;
         this.prevMouseX = e.clientX;
         this.prevMouseY = e.clientY;
       }
-    });
-
-    window.addEventListener('mouseup', () => {
+    };
+    this._boundPointerLockChange = () => {
+      const wasLocked = this.isPointerLocked;
+      this.isPointerLocked = document.pointerLockElement === this.domElement;
       this.isDragging = false;
-    });
+      // Skip initial mousemove(s) after lock transitions so cursor-recenter warps cannot snap the camera
+      if (this.isPointerLocked && !wasLocked) {
+        this._ignoreNextPointerMoves = 2;
+      }
+    };
+    this._boundViewportChange = () => {
+      this.isDragging = false;
+      if (this.isPointerLocked) {
+        this._ignoreNextPointerMoves = 2;
+      }
+    };
+    this._boundClearInputState = () => {
+      this._resetInputState();
+    };
+    this._boundVisibilityChange = () => {
+      if (document.hidden) {
+        this._resetInputState();
+      } else if (this.isPointerLocked) {
+        this._ignoreNextPointerMoves = 2;
+      }
+    };
 
-    window.addEventListener('mousemove', (e) => this._onMouseMove(e));
+    window.addEventListener('keydown', this._boundKeyDown);
+    window.addEventListener('keyup', this._boundKeyUp);
+    this.domElement.addEventListener('click', this._boundCanvasClick);
+    document.addEventListener('pointerlockchange', this._boundPointerLockChange);
+    document.addEventListener('fullscreenchange', this._boundViewportChange);
+    window.addEventListener('resize', this._boundViewportChange);
+    window.addEventListener('blur', this._boundClearInputState);
+    document.addEventListener('visibilitychange', this._boundVisibilityChange);
+    this.domElement.addEventListener('mousedown', this._boundCanvasMouseDown);
+    window.addEventListener('mouseup', this._boundMouseUp);
+    window.addEventListener('mousemove', this._boundMouseMove);
 
     // Touch controls for mobile / tablet devices
     this._initTouchControls();
+  }
+
+  setPaused(paused) {
+    this.isPaused = Boolean(paused);
+    this._resetInputState();
+    this._pauseCamOffset.set(0, 0, 0);
+    if (!this.isPaused) {
+      if (this.character && this.mode === 'ski') {
+        this.character.setVisible(true);
+      }
+      this._updateCamera(0.016, true);
+    }
+  }
+
+  _resetInputState() {
+    this.isDragging = false;
+    this.keyboardForward = false;
+    this.touchForward = false;
+    this.keys.forward = false;
+    this.keys.backward = false;
+    this.keys.left = false;
+    this.keys.right = false;
+    this.keys.jump = false;
+    this.keys.up = false;
+    this.keys.down = false;
+    this.keys.sprint = false;
+    this.leftTouchIds.clear();
+    this.rightTouchId = null;
   }
 
   /**
@@ -326,7 +392,8 @@ export class PlayerController {
   }
 
   _onKeyDown(e) {
-    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
       return;
     }
 
@@ -339,10 +406,16 @@ export class PlayerController {
       this.keys.left = true;
     } else if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
       this.keys.right = true;
+    } else if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E') {
+      this.keys.up = true;
+    } else if (e.code === 'KeyQ' || e.code === 'KeyC' || e.key === 'q' || e.key === 'Q' || e.key === 'c' || e.key === 'C') {
+      this.keys.down = true;
+    } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift') {
+      this.keys.sprint = true;
     } else if (e.code === 'Space' || e.key === ' ') {
       if (!this.keys.jump) {
         this.keys.jump = true;
-        if (this.mode === 'ski' && !this._triggerJump()) {
+        if (!this.isPaused && this.mode === 'ski' && !this._triggerJump()) {
           this._jumpBufferTimer = 0.12;
         }
       }
@@ -380,6 +453,12 @@ export class PlayerController {
       this.keys.left = false;
     } else if (e.code === 'KeyD' || e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
       this.keys.right = false;
+    } else if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E') {
+      this.keys.up = false;
+    } else if (e.code === 'KeyQ' || e.code === 'KeyC' || e.key === 'q' || e.key === 'Q' || e.key === 'c' || e.key === 'C') {
+      this.keys.down = false;
+    } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift') {
+      this.keys.sprint = false;
     } else if (e.code === 'Space' || e.key === ' ') {
       this.keys.jump = false;
     }
@@ -387,21 +466,42 @@ export class PlayerController {
 
   _onMouseMove(e) {
     const sensitivity = this.mouseSensitivity;
+    let dx = 0;
+    let dy = 0;
 
     if (this.isPointerLocked) {
-      this.yaw -= e.movementX * sensitivity;
-      this.pitch += e.movementY * sensitivity;
+      if (this._ignoreNextPointerMoves > 0) {
+        this._ignoreNextPointerMoves--;
+        return;
+      }
+      dx = e.movementX;
+      dy = e.movementY;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+      if (Math.abs(dx) > MAX_SINGLE_MOUSE_DELTA || Math.abs(dy) > MAX_SINGLE_MOUSE_DELTA) {
+        return;
+      }
     } else if (this.isDragging) {
-      const dx = e.clientX - this.prevMouseX;
-      const dy = e.clientY - this.prevMouseY;
+      if ((e.buttons & 1) === 0) {
+        this.isDragging = false;
+        return;
+      }
+      dx = e.clientX - this.prevMouseX;
+      dy = e.clientY - this.prevMouseY;
       this.prevMouseX = e.clientX;
       this.prevMouseY = e.clientY;
-
-      this.yaw -= dx * sensitivity;
-      this.pitch += dy * sensitivity;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+      if (Math.abs(dx) > MAX_SINGLE_MOUSE_DELTA || Math.abs(dy) > MAX_SINGLE_MOUSE_DELTA) {
+        return;
+      }
     } else {
       return;
     }
+
+    this.yaw -= dx * sensitivity;
+    this.pitch += dy * sensitivity;
+
+    if (!Number.isFinite(this.yaw)) this.yaw = 0;
+    if (!Number.isFinite(this.pitch)) this.pitch = 0.08;
 
     // Clamp pitch: max looking down and up in FPS
     this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
@@ -542,6 +642,10 @@ export class PlayerController {
    * @returns {number}
    */
   getAltitude() {
+    if (this.isGrounded && this._frameGroundY !== null) {
+      this.altitude = Math.max(0, this.position.y - this._frameGroundY);
+      return this.altitude;
+    }
     if (!this.terrainManager?.getHeightAt) return this.altitude || 0;
     const groundH = this.terrainManager.getHeightAt(this.position.x, this.position.z);
     this.altitude = Math.max(0, this.position.y - groundH);
@@ -564,8 +668,53 @@ export class PlayerController {
     this.velocity.y = -2.5; // Initial downward drop impulse
   }
 
+  /**
+   * Allows looking around (mouse drag) and free-flying the camera (WASD / Space / E / Q)
+   * while gameplay physics are paused in the Lighting Studio.
+   * @param {number} deltaTime
+   */
+  updatePausedCamera(deltaTime) {
+    if (!this.isPaused) return;
+    const dt = Math.min(deltaTime || 0.016, 0.05);
+
+    const moveSpeed = this.keys.sprint ? 85.0 : 32.0;
+    this._updateCamera(dt, true);
+
+    this.camera.getWorldDirection(_scratchForward);
+    _scratchRight.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+
+    if (this.keys.forward) {
+      this._pauseCamOffset.addScaledVector(_scratchForward, moveSpeed * dt);
+    }
+    if (this.keys.backward) {
+      this._pauseCamOffset.addScaledVector(_scratchForward, -moveSpeed * dt);
+    }
+    if (this.keys.right) {
+      this._pauseCamOffset.addScaledVector(_scratchRight, moveSpeed * dt);
+    }
+    if (this.keys.left) {
+      this._pauseCamOffset.addScaledVector(_scratchRight, -moveSpeed * dt);
+    }
+    if (this.keys.jump || this.keys.up) {
+      this._pauseCamOffset.y += moveSpeed * dt;
+    }
+    if (this.keys.down) {
+      this._pauseCamOffset.y -= moveSpeed * dt;
+    }
+
+    this.camera.position.add(this._pauseCamOffset);
+    if (this.characterCamera) {
+      this.characterCamera.position.copy(this.camera.position);
+      this.characterCamera.quaternion.copy(this.camera.quaternion);
+    }
+    if (this.character) {
+      const showBody = this._pauseCamOffset.lengthSq() <= 0.04 && this.mode === 'ski';
+      this.character.setVisible(showBody);
+    }
+  }
+
   update(deltaTime) {
-    if (!deltaTime || deltaTime <= 0.0001) return;
+    if (this.isPaused || !deltaTime || deltaTime <= 0.0001) return;
     const dt = Math.min(deltaTime, 0.066);
 
     // Guard position & velocity from any numerical anomalies
@@ -583,6 +732,7 @@ export class PlayerController {
       this.velocity.set(0, 0, 0);
       const groundH = this.terrainManager.getHeightAt(this.position.x, this.position.z);
       this.position.y = groundH + this.initialDropHeight;
+      this.altitude = this.initialDropHeight;
       this.isGrounded = false;
       this.focusY = this.position.y + this.focusHeight;
       if (this.character) {
@@ -1244,6 +1394,20 @@ export class PlayerController {
   }
 
   dispose() {
+    if (this._boundKeyDown) {
+      window.removeEventListener('keydown', this._boundKeyDown);
+      window.removeEventListener('keyup', this._boundKeyUp);
+      this.domElement?.removeEventListener('click', this._boundCanvasClick);
+      document.removeEventListener('pointerlockchange', this._boundPointerLockChange);
+      document.removeEventListener('fullscreenchange', this._boundViewportChange);
+      window.removeEventListener('resize', this._boundViewportChange);
+      window.removeEventListener('blur', this._boundClearInputState);
+      document.removeEventListener('visibilitychange', this._boundVisibilityChange);
+      this.domElement?.removeEventListener('mousedown', this._boundCanvasMouseDown);
+      window.removeEventListener('mouseup', this._boundMouseUp);
+      window.removeEventListener('mousemove', this._boundMouseMove);
+    }
+
     if (this.character) {
       this.character.dispose();
       this.character = null;

@@ -1,3 +1,6 @@
+import { requestPointerLockSafe } from '../utils/pointerLock.js';
+import { LIGHTING_PRESETS } from '../environment/LightingPresets.js';
+
 /**
  * Triggers browser fullscreen mode with cross-browser compatibility.
  * Non-blocking fire-and-forget for mobile/tablet/desktop compatibility.
@@ -33,70 +36,129 @@ export class LoadingOverlay {
     this.overlay = document.getElementById('loading-overlay');
     this.loadingBarContainer = document.getElementById('loading-bar-container');
     this.loadingBar = document.getElementById('loading-bar');
-    this.playBtn = document.getElementById('play-btn');
+    this.presetSelector = document.getElementById('preset-selector');
+    this.presetButtonsContainer = document.getElementById('preset-buttons');
 
     this.isReady = false;
     this.isPlaying = false;
+    this.selectedPreset = 'default';
     this._playCallbacks = [];
 
     this._initEvents();
   }
 
   _initEvents() {
-    if (!this.playBtn) return;
+    if (!this.presetButtonsContainer) return;
 
-    const handlePlay = (e) => {
-      if (e) {
-        if (typeof e.preventDefault === 'function') e.preventDefault();
-        if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    this.presetButtonsContainer.innerHTML = '';
+    const entries = Object.entries(LIGHTING_PRESETS);
+
+    entries.forEach(([presetId, cfg], idx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'preset-card';
+      btn.dataset.preset = presetId;
+      btn.style.setProperty('--accent', cfg.accent || '#38bdf8');
+
+      const media = document.createElement('div');
+      media.className = 'preset-media';
+
+      const img = document.createElement('img');
+      img.className = 'preset-thumb';
+      img.src = cfg.thumbnail || `/thumbnails/${presetId}.png`;
+      img.alt = cfg.label || presetId;
+      img.loading = 'eager';
+      img.decoding = 'async';
+
+      const sheen = document.createElement('div');
+      sheen.className = 'preset-media-overlay';
+
+      const badge = document.createElement('span');
+      badge.className = 'preset-badge';
+      badge.textContent = cfg.badge || 'PRESET';
+
+      media.append(img, sheen, badge);
+
+      if (cfg.clouds?.enabled) {
+        const cloudTag = document.createElement('span');
+        cloudTag.className = 'preset-cloud-tag';
+        cloudTag.textContent = 'CLOUDS';
+        media.appendChild(cloudTag);
       }
 
-      if (this.isPlaying) return;
-      this.isPlaying = true;
+      const body = document.createElement('div');
+      body.className = 'preset-body';
 
-      // 1. Immediately hide loading overlay and disable its pointer events so touches pass directly to game
-      if (this.overlay) {
-        this.overlay.style.pointerEvents = 'none';
-        this.overlay.classList.add('fade-out');
-        setTimeout(() => {
-          this.overlay.style.display = 'none';
-        }, 350);
+      const textWrap = document.createElement('div');
+      textWrap.className = 'preset-text';
+
+      const label = document.createElement('span');
+      label.className = 'preset-label';
+      label.textContent = cfg.label || presetId;
+      textWrap.appendChild(label);
+
+      if (cfg.subtitle) {
+        const sub = document.createElement('span');
+        sub.className = 'preset-subtitle';
+        sub.textContent = cfg.subtitle;
+        textWrap.appendChild(sub);
       }
 
-      // Ensure window has focus so keyboard events (W / ArrowUp) register immediately
-      try {
-        window.focus();
-      } catch (err) {}
+      const cta = document.createElement('span');
+      cta.className = 'preset-cta';
+      cta.textContent = 'DROP IN';
 
-      // 2. Fire registered start callbacks immediately (starts game & launches player)
-      for (const cb of this._playCallbacks) {
-        try {
-          cb();
-        } catch (err) {
-          console.error('Error in onPlay callback:', err);
+      body.append(textWrap, cta);
+      btn.append(media, body);
+      if (idx === 0) {
+        this._firstPresetBtn = btn;
+      }
+
+      const handleSelect = (e) => {
+        if (e) {
+          if (typeof e.preventDefault === 'function') e.preventDefault();
+          if (typeof e.stopPropagation === 'function') e.stopPropagation();
         }
-      }
 
-      // 3. Attempt browser fullscreen non-blockingly (fire-and-forget)
-      triggerBrowserFullscreen();
+        if (this.isPlaying) return;
+        this.isPlaying = true;
+        this.selectedPreset = presetId;
 
-      // 4. Request pointer lock only on non-touch desktop devices with a mouse
-      const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-      if (!isTouchDevice) {
-        const canvas = document.querySelector('#webgl');
+        if (this.overlay) {
+          this.overlay.style.pointerEvents = 'none';
+          this.overlay.classList.add('fade-out');
+          setTimeout(() => {
+            this.overlay.style.display = 'none';
+          }, 350);
+        }
+
         try {
-          const lockPromise = canvas?.requestPointerLock?.();
-          if (lockPromise && typeof lockPromise.catch === 'function') {
-            lockPromise.catch(() => {});
-          }
+          window.focus();
         } catch (err) {}
-      }
-    };
 
-    // Listen to click, touchend, and pointerup to guarantee immediate firing on all mobile devices
-    this.playBtn.addEventListener('click', handlePlay);
-    this.playBtn.addEventListener('touchend', handlePlay, { passive: false });
-    this.playBtn.addEventListener('pointerup', handlePlay);
+        for (const cb of this._playCallbacks) {
+          try {
+            cb(presetId);
+          } catch (err) {
+            console.error('Error in onPlay callback:', err);
+          }
+        }
+
+        triggerBrowserFullscreen();
+
+        const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        if (!isTouchDevice) {
+          const canvas = document.querySelector('#webgl');
+          requestPointerLockSafe(canvas);
+        }
+      };
+
+      btn.addEventListener('click', handleSelect);
+      btn.addEventListener('touchend', handleSelect, { passive: false });
+      btn.addEventListener('pointerup', handleSelect);
+
+      this.presetButtonsContainer.appendChild(btn);
+    });
   }
 
   /**
@@ -112,7 +174,7 @@ export class LoadingOverlay {
   }
 
   /**
-   * Swaps loading bar for the Play button once loaded
+   * Swaps loading bar for the preset selector once loaded
    */
   setReady() {
     if (this.isReady) return;
@@ -125,9 +187,9 @@ export class LoadingOverlay {
     if (this.loadingBarContainer) {
       this.loadingBarContainer.style.display = 'none';
     }
-    if (this.playBtn) {
-      this.playBtn.style.display = 'block';
-      this.playBtn.focus();
+    if (this.presetSelector) {
+      this.presetSelector.style.display = 'flex';
+      this._firstPresetBtn?.focus();
     }
   }
 

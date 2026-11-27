@@ -381,7 +381,7 @@ export class TreeGenerator {
    * @param {THREE.WebGLRenderer} [renderer]
    * @param {THREE.Texture} [environment]
    */
-  initImpostors(renderer, environment = null) {
+  initImpostors(renderer, environment = null, lightingOverrides = {}) {
     if (renderer) this.renderer = renderer;
     if (!this.renderer || !this.loadedModels || this.loadedModels.length === 0) return;
 
@@ -390,13 +390,10 @@ export class TreeGenerator {
     try {
       const baker = new TreeImpostorBaker(this.renderer, {
         environment: env,
-        sunPosition: new THREE.Vector3(130, 190, 90),
-        sunColor: 0xffeacc,
-        sunIntensity: 2.3,
-        ambientColor: 0xd0e2f7,
-        ambientIntensity: 0.17,
-        groundBounceColor: 0xf2f5f9,
-        groundBounceIntensity: 0.35,
+        sunIntensity: 0,
+        ambientIntensity: 0,
+        groundBounceIntensity: 0,
+        ...lightingOverrides,
       });
       this.impostors = baker.bake(this.loadedModels, env);
       for (const m of this.loadedModels) {

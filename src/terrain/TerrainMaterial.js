@@ -45,22 +45,22 @@ export const DEFAULT_LAKE_CONFIG = {
   lakeFrostColor: '#80eec5',
   lakeCrackColor: '#a6ffff',
 
-  // Surface & Lighting Optics
-  lakeRoughness: 0.03,
-  lakeMetalness: 0.76,
-  lakeSpecular: 0.35,
-  lakeGlintPower: 640,
-  lakeFresnel: 0.48,
-  lakeFresnelPower: 2.5,
-  lakeSSS: 0.28,
+  // Surface & Lighting Optics (non-metallic glacial ice with soft satin reflection)
+  lakeRoughness: 0.24,
+  lakeMetalness: 0.06,
+  lakeSpecular: 0.14,
+  lakeGlintPower: 420,
+  lakeFresnel: 0.22,
+  lakeFresnelPower: 3.0,
+  lakeSSS: 0.22,
 
-  // High-Density Cracks, Micro-Fractures & Noise Patchiness
-  lakeCrackScale: 0.65,        // Increased detail density (previously 0.22) -> ~3x higher density of stress fracture networks
-  lakeCrackIntensity: 0.35,    // Crisp luminous fracture glow (previously 0.1)
-  lakeCrackWidth: 0.020,       // Razor-thin crystalline fissures (previously 0.032)
-  lakeNoiseScale: 0.048,       // Richer organic noise distribution (previously 0.022)
-  lakeNoiseThreshold: 0.36,    // Natural fracture field distribution (previously 0.43)
-  lakeNormalRipples: 0.045,    // High-fidelity frozen flow ripples (previously 0.022)
+  // Kept for config compatibility
+  lakeCrackScale: 0.65,
+  lakeCrackIntensity: 0.0,
+  lakeCrackWidth: 0.020,
+  lakeNoiseScale: 0.048,
+  lakeNoiseThreshold: 0.36,
+  lakeNormalRipples: 0.025,
 };
 
 /**
@@ -108,13 +108,6 @@ export class TerrainMaterialFactory {
     this.snowNormalMap.wrapS = THREE.RepeatWrapping;
     this.snowNormalMap.wrapT = THREE.RepeatWrapping;
 
-    // 3. Lake Noise Map for organic crack alpha distribution
-    this.lakeNoiseMap = textureLoader.load('/textures/lake_noise.png');
-    this.lakeNoiseMap.wrapS = THREE.RepeatWrapping;
-    this.lakeNoiseMap.wrapT = THREE.RepeatWrapping;
-    this.lakeNoiseMap.minFilter = THREE.LinearMipmapLinearFilter;
-    this.lakeNoiseMap.magFilter = THREE.LinearFilter;
-
     this.snowConfig = { ...DEFAULT_SNOW_CONFIG };
     this.lakeConfig = { ...DEFAULT_LAKE_CONFIG };
 
@@ -126,7 +119,6 @@ export class TerrainMaterialFactory {
       uRockAOMap: { value: this.rockAOMap },
       uSnowNormalMap: { value: this.snowNormalMap },
       uSnowNormalScale: { value: this.snowConfig.snowNormalScale },
-      uLakeNoiseMap: { value: this.lakeNoiseMap },
       uTime: { value: 0.0 },
       uCameraPosition: { value: new THREE.Vector3() },
       uSunDirection: { value: new THREE.Vector3(130, 190, 90).normalize() },
@@ -226,7 +218,6 @@ export class TerrainMaterialFactory {
       shader.uniforms.uLakeNoiseScale = this.uniforms.uLakeNoiseScale;
       shader.uniforms.uLakeNoiseThreshold = this.uniforms.uLakeNoiseThreshold;
       shader.uniforms.uLakeNormalRipples = this.uniforms.uLakeNormalRipples;
-      shader.uniforms.uLakeNoiseMap = this.uniforms.uLakeNoiseMap;
 
       // Pass world position, normal, and lake attributes from vertex shader
       shader.vertexShader = `
@@ -296,7 +287,6 @@ export class TerrainMaterialFactory {
         uniform float uLakeNoiseScale;
         uniform float uLakeNoiseThreshold;
         uniform float uLakeNormalRipples;
-        uniform sampler2D uLakeNoiseMap;
 
         varying vec2 vLakeData;
         varying vec3 vCustomWorldPos;
@@ -311,8 +301,8 @@ export class TerrainMaterialFactory {
         vec3 g_nX, g_nY, g_nZ;
         float g_lakeFactor;
         float g_lakeDepth;
+        float g_distToCam;
         vec3 g_lakeIceColor;
-        vec3 g_lakeCrackGlow;
 
         // 2D Rotation Helper
         vec2 rotateUV(vec2 uv, float angle) {
@@ -335,58 +325,6 @@ export class TerrainMaterialFactory {
           return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
         }
 
-        // Fast Voronoi cell boundary distance for organic, branching ice stress fractures
-        float getIceVoronoiEdge(vec2 p) {
-          vec2 n = floor(p);
-          vec2 f = fract(p);
-
-          vec2 mg = vec2(0.0);
-          vec2 mr = vec2(0.0);
-          float md = 8.0;
-
-          // Pass 1: find closest fracture seed
-          for (int j = -1; j <= 1; j++) {
-            for (int i = -1; i <= 1; i++) {
-              vec2 g = vec2(float(i), float(j));
-              vec2 o = hash2(n + g) * 0.35 + 0.5; // jitter in [0.15, 0.85]
-              vec2 r = g + o - f;
-              float d = dot(r, r);
-              if (d < md) {
-                md = d;
-                mr = r;
-                mg = g;
-              }
-            }
-          }
-
-          // Pass 2: calculate minimum Euclidean distance to cell boundary (3x3 around closest cell)
-          float edgeDist = 8.0;
-          for (int j = -1; j <= 1; j++) {
-            for (int i = -1; i <= 1; i++) {
-              vec2 g = mg + vec2(float(i), float(j));
-              vec2 o = hash2(n + g) * 0.35 + 0.5;
-              vec2 r = g + o - f;
-              vec2 diff = mr - r;
-              if (dot(diff, diff) > 0.0001) {
-                vec2 mid = 0.5 * (mr + r);
-                vec2 dir = normalize(r - mr);
-                edgeDist = min(edgeDist, dot(mid, dir));
-              }
-            }
-          }
-
-          return max(0.0, edgeDist);
-        }
-
-        // Multi-frequency organic domain warping: turns straight Voronoi lines into jagged alpine fissures
-        vec2 warpIceCoord(vec2 p) {
-          float w1 = sin(p.y * 1.35 + sin(p.x * 0.72) * 2.2);
-          float w2 = cos(p.x * 1.28 + sin(p.y * 0.84) * 2.0);
-          float w3 = sin(p.x * 3.4 - p.y * 2.7) * 0.30;
-          float w4 = cos(p.y * 3.8 + p.x * 3.1) * 0.30;
-          return p + vec2(w1 + w3, w2 + w4) * 0.35;
-        }
-
         // Optimized dynamic ice crystal sparkle with uniform scale
         float computeSnowSparkle(vec3 worldPos, vec3 viewDir, vec3 sunDir, float distFade) {
           vec2 gridCoord = worldPos.xz * uSparkleScale;
@@ -406,9 +344,10 @@ export class TerrainMaterialFactory {
           return glint * distFade;
         }
 
-        // Optimized Dual-Frequency Anti-Tiled Rock Sampling
+        // Optimized Dual-Frequency Anti-Tiled Rock Sampling (single-pass past 125m)
         void sampleRockPlane(
           vec2 coord,
+          float distToCam,
           out vec3 outColor,
           out float outRough,
           out float outAO,
@@ -418,31 +357,36 @@ export class TerrainMaterialFactory {
 
           // Layer 1: Macro frequency (~26m repeat)
           vec2 uv1 = wCoord * 0.038;
+          vec3 c1 = texture2D(uRockColorMap, uv1).rgb;
+          float r1 = texture2D(uRockRoughnessMap, uv1).r;
+          float ao1 = texture2D(uRockAOMap, uv1).r;
+          vec3 n1 = texture2D(uRockNormalMap, uv1).xyz * 2.0 - 1.0;
+
+          if (distToCam > 125.0) {
+            outColor = c1;
+            outRough = r1;
+            outAO = ao1;
+            outNormal = normalize(n1);
+            return;
+          }
 
           // Layer 2: Detuned frequency (~16m repeat, non-harmonic 1.63x ratio, rotated by 37 deg)
           vec2 uv2 = rotateUV(wCoord * 0.062, 0.6458) + vec2(17.3, 41.7);
 
-          // Albedo
-          vec3 c1 = texture2D(uRockColorMap, uv1).rgb;
           vec3 c2 = texture2D(uRockColorMap, uv2).rgb;
           float blendMask = clamp(0.5 + 0.5 * sin(coord.x * 0.042 + coord.y * 0.035), 0.0, 1.0);
-          outColor = mix(c1, c2, 0.35 + 0.30 * blendMask);
+          float w2 = (0.35 + 0.30 * blendMask) * (1.0 - smoothstep(95.0, 125.0, distToCam));
+          outColor = mix(c1, c2, w2);
 
-          // Roughness
-          float r1 = texture2D(uRockRoughnessMap, uv1).r;
           float r2 = texture2D(uRockRoughnessMap, uv2).r;
-          outRough = mix(r1, r2, 0.35 + 0.30 * blendMask);
+          outRough = mix(r1, r2, w2);
 
-          // Ambient Occlusion
-          float ao1 = texture2D(uRockAOMap, uv1).r;
           float ao2 = texture2D(uRockAOMap, uv2).r;
           outAO = min(ao1, ao2);
 
-          // Normal Maps
-          vec3 n1 = texture2D(uRockNormalMap, uv1).xyz * 2.0 - 1.0;
           vec3 n2 = texture2D(uRockNormalMap, uv2).xyz * 2.0 - 1.0;
           n2.xy = rotateUV(n2.xy, -0.6458);
-          outNormal = normalize(vec3(n1.xy + n2.xy * 0.60, n1.z));
+          outNormal = normalize(vec3(n1.xy + n2.xy * (0.60 * (1.0 - smoothstep(95.0, 125.0, distToCam))), n1.z));
         }
 
         ${shader.fragmentShader}
@@ -454,243 +398,172 @@ export class TerrainMaterialFactory {
         `
         #include <color_fragment>
 
-        // =========================================================================
-        // 1. FAST ORGANIC SNOW-ROCK BOUNDARY (Decoupled from polygon triangle edges)
-        // =========================================================================
-        vec2 flowUV1 = vCustomWorldPos.xz * 0.022;
-        vec2 flowUV2 = vCustomWorldPos.xz * 0.055 + vec2(17.3, 31.9);
-
-        float flow1 = texture2D(uSnowNormalMap, flowUV1).r;
-        float flow2 = texture2D(uSnowNormalMap, flowUV2).g;
-
-        // Organic continuous wind-drift perturbation (smooth across screen pixels)
-        float organicDrift = (flow1 * 0.60 + flow2 * 0.40 - 0.5) * 0.26;
-
-        float effectiveSlope = vCustomWorldNorm.y + organicDrift;
-        float slopeSnow = smoothstep(uSnowSlopeMin, uSnowSlopeMax, effectiveSlope);
-
-        // Alpine mountain peak wind scouring
-        float peakScour = smoothstep(uPeakScourStart, uPeakScourEnd, vCustomWorldPos.y) * uPeakScourIntensity;
-
-        float snowFactor = clamp(slopeSnow - peakScour, 0.0, 1.0);
-        g_snowFactor = snowFactor;
-
-        // =========================================================================
-        // 2a. MULTI-SCALE SNOW PERTURBATION & CAVITY AO (Sastrugi + Ripples + Powder)
-        // =========================================================================
-        vec3 wn = normalize(vCustomWorldNorm);
-        vec3 t = normalize(cross(wn, vec3(0.0, 0.0, 1.0)));
-        if (length(t) < 0.1) t = normalize(cross(wn, vec3(1.0, 0.0, 0.0)));
-        vec3 b = cross(wn, t);
-        mat3 tbn = mat3(t, b, wn);
-
-        // Layer 1: Macro wind sastrugi ridges (broad alpine snow drifts, ~20m-35m)
-        vec2 sastrugiDir = vec2(0.848, 0.530);
-        vec2 sastrugiCoord = vec2(
-          dot(vCustomWorldPos.xz, sastrugiDir) * 0.038,
-          dot(vCustomWorldPos.xz, vec2(-sastrugiDir.y, sastrugiDir.x)) * 0.015
-        );
-        vec3 sMap1 = texture2D(uSnowNormalMap, sastrugiCoord).xyz * 2.0 - 1.0;
-
-        // Layer 2: Meso wind ripples & tracks (~4m-6m)
-        vec2 rippleCoord = rotateUV(vCustomWorldPos.xz * 0.22, 1.18) + vec2(19.2, 43.7);
-        vec3 sMap2 = texture2D(uSnowNormalMap, rippleCoord).xyz * 2.0 - 1.0;
-        sMap2.xy = rotateUV(sMap2.xy, -1.18);
-
-        // Layer 3: Micro powder granules (~0.9m-1.2m, distance-gated past 140m where sub-pixel)
+        float lakeFactor = vLakeData.x;
+        float lakeDepth = vLakeData.y;
+        g_lakeFactor = lakeFactor;
+        g_lakeDepth = lakeDepth;
         float distToCam = length(uCameraPosition - vCustomWorldPos);
-        vec2 microXY = vec2(0.0);
-        float microWeight = 1.0 - smoothstep(95.0, 140.0, distToCam);
-        if (microWeight > 0.001) {
-          vec2 microCoord = rotateUV(vCustomWorldPos.xz * 0.95, 2.35) + vec2(47.1, 13.8);
-          vec3 sMap3 = texture2D(uSnowNormalMap, microCoord).xyz * 2.0 - 1.0;
-          microXY = rotateUV(sMap3.xy, -2.35) * (0.32 * microWeight);
-        }
+        g_distToCam = distToCam;
 
-        // Layer 4: Ultra-fine crystalline crust (under player's boots, skipped beyond 38m)
-        vec2 fineXY = vec2(0.0);
-        float nearWeight = clamp(1.0 - distToCam / 38.0, 0.0, 1.0);
-        if (nearWeight > 0.001) {
-          vec2 fineCoord = rotateUV(vCustomWorldPos.xz * 2.8, 0.45) + vec2(83.5, 31.2);
-          vec3 sMap4 = texture2D(uSnowNormalMap, fineCoord).xyz * 2.0 - 1.0;
-          fineXY = rotateUV(sMap4.xy, -0.45) * (0.28 * nearWeight);
-        }
-
-        // Composite tangent perturbation with boosted normal strength (uSnowNormalScale)
-        vec2 snowPerturb = (
-          sMap1.xy * 0.45 +
-          sMap2.xy * 0.35 +
-          microXY +
-          fineXY
-        ) * uSnowNormalScale;
-
-        vec3 tangentSnowN = normalize(vec3(snowPerturb, 1.0));
-        vec3 worldSnowN = normalize(tbn * tangentSnowN);
-        g_worldSnowN = worldSnowN;
-        g_powderCrust = clamp((sMap2.x + microXY.y) * 0.5 + 0.5, 0.0, 1.0);
-
-        // Triplanar blend weights with sharpness exponent 4.0
-        vec3 blending = pow(abs(vCustomWorldNorm), vec3(4.0));
+        // =========================================================================
+        // 1. FAST ORGANIC SNOW-ROCK BOUNDARY (Skipped on solid lake ice)
+        // =========================================================================
+        float snowFactor = 0.0;
+        vec3 terrainColor = vec3(0.0);
+        vec3 aNormAbs = abs(vCustomWorldNorm);
+        vec3 aNorm2 = aNormAbs * aNormAbs;
+        vec3 blending = aNorm2 * aNorm2;
         blending = max(blending, vec3(0.0001));
         blending /= (blending.x + blending.y + blending.z);
         g_blending = blending;
 
-        vec3 litRockColor = vec3(0.3);
+        if (lakeFactor < 0.42) {
+          vec2 flowUV1 = vCustomWorldPos.xz * 0.022;
+          float flow1 = texture2D(uSnowNormalMap, flowUV1).r;
+          float flow2 = (distToCam < 160.0)
+            ? texture2D(uSnowNormalMap, vCustomWorldPos.xz * 0.055 + vec2(17.3, 31.9)).g
+            : flow1;
 
-        // =========================================================================
-        // 2b. GATED ROCK SAMPLING (Early-exit when snow covers this pixel!)
-        // =========================================================================
-        if (snowFactor < 0.98) {
-          vec3 colX = vec3(0.32), colY = vec3(0.32), colZ = vec3(0.32);
-          float roughX = 0.85, roughY = 0.85, roughZ = 0.85;
-          float aoX = 1.0, aoY = 1.0, aoZ = 1.0;
-          vec3 nX = vec3(0.0, 0.0, 1.0), nY = vec3(0.0, 0.0, 1.0), nZ = vec3(0.0, 0.0, 1.0);
+          // Organic continuous wind-drift perturbation (smooth across screen pixels)
+          float organicDrift = (flow1 * 0.60 + flow2 * 0.40 - 0.5) * 0.26;
 
-          // Only sample planes that contribute visually
-          if (blending.x > 0.03) sampleRockPlane(vCustomWorldPos.zy, colX, roughX, aoX, nX);
-          if (blending.y > 0.03) sampleRockPlane(vCustomWorldPos.xz, colY, roughY, aoY, nY);
-          if (blending.z > 0.03) sampleRockPlane(vCustomWorldPos.xy, colZ, roughZ, aoZ, nZ);
+          float effectiveSlope = vCustomWorldNorm.y + organicDrift;
+          float slopeSnow = smoothstep(uSnowSlopeMin, uSnowSlopeMax, effectiveSlope);
 
-          g_roughX = roughX; g_roughY = roughY; g_roughZ = roughZ;
-          g_nX = nX; g_nY = nY; g_nZ = nZ;
+          // Alpine mountain peak wind scouring
+          float peakScour = smoothstep(uPeakScourStart, uPeakScourEnd, vCustomWorldPos.y) * uPeakScourIntensity;
 
-          vec3 rockAlbedo = colX * blending.x + colY * blending.y + colZ * blending.z;
-          float rockAO = aoX * blending.x + aoY * blending.y + aoZ * blending.z;
+          snowFactor = clamp(slopeSnow - peakScour, 0.0, 1.0);
+          g_snowFactor = snowFactor;
 
-          // Macro Geological Strata & Tone Modulation
-          float strata = sin(vCustomWorldPos.y * 0.075 + sin(vCustomWorldPos.x * 0.02) * 1.5) * 0.07;
-          float macroWave = sin(vCustomWorldPos.x * 0.012 + vCustomWorldPos.z * 0.009) * cos(vCustomWorldPos.y * 0.014);
-          vec3 macroTint = mix(vec3(0.93, 0.96, 1.04), vec3(1.06, 1.01, 0.94), macroWave * 0.5 + 0.5);
-          rockAlbedo = rockAlbedo * macroTint * (1.0 + strata);
+          // =========================================================================
+          // 2a. MULTI-SCALE SNOW PERTURBATION & CAVITY AO (Gated by snow presence)
+          // =========================================================================
+          vec3 worldSnowN = normalize(vCustomWorldNorm);
+          vec3 tangentSnowN = vec3(0.0, 0.0, 1.0);
+          g_powderCrust = 0.5;
 
-          litRockColor = rockAlbedo * mix(0.55, 1.0, rockAO);
+          if (snowFactor > 0.01) {
+            vec3 wn = worldSnowN;
+            vec3 t = normalize(cross(wn, vec3(0.0, 0.0, 1.0)));
+            if (length(t) < 0.1) t = normalize(cross(wn, vec3(1.0, 0.0, 0.0)));
+            vec3 b = cross(wn, t);
+            mat3 tbn = mat3(t, b, wn);
+
+            // Layer 1: Macro wind sastrugi ridges (broad alpine snow drifts, ~20m-35m)
+            vec2 sastrugiDir = vec2(0.848, 0.530);
+            vec2 sastrugiCoord = vec2(
+              dot(vCustomWorldPos.xz, sastrugiDir) * 0.038,
+              dot(vCustomWorldPos.xz, vec2(-sastrugiDir.y, sastrugiDir.x)) * 0.015
+            );
+            vec3 sMap1 = texture2D(uSnowNormalMap, sastrugiCoord).xyz * 2.0 - 1.0;
+
+            // Layer 2: Meso wind ripples & tracks (~4m-6m, distance-gated past 220m)
+            vec2 rippleXY = vec2(0.0);
+            float rippleWeight = 1.0 - smoothstep(160.0, 220.0, distToCam);
+            if (rippleWeight > 0.001) {
+              vec2 rippleCoord = rotateUV(vCustomWorldPos.xz * 0.22, 1.18) + vec2(19.2, 43.7);
+              vec3 sMap2 = texture2D(uSnowNormalMap, rippleCoord).xyz * 2.0 - 1.0;
+              rippleXY = rotateUV(sMap2.xy, -1.18) * (0.35 * rippleWeight);
+            }
+
+            // Layer 3: Micro powder granules (~0.9m-1.2m, distance-gated past 140m where sub-pixel)
+            vec2 microXY = vec2(0.0);
+            float microWeight = 1.0 - smoothstep(95.0, 140.0, distToCam);
+            if (microWeight > 0.001) {
+              vec2 microCoord = rotateUV(vCustomWorldPos.xz * 0.95, 2.35) + vec2(47.1, 13.8);
+              vec3 sMap3 = texture2D(uSnowNormalMap, microCoord).xyz * 2.0 - 1.0;
+              microXY = rotateUV(sMap3.xy, -2.35) * (0.32 * microWeight);
+            }
+
+            // Layer 4: Ultra-fine crystalline crust (under player's boots, skipped beyond 38m)
+            vec2 fineXY = vec2(0.0);
+            float nearWeight = clamp(1.0 - distToCam / 38.0, 0.0, 1.0);
+            if (nearWeight > 0.001) {
+              vec2 fineCoord = rotateUV(vCustomWorldPos.xz * 2.8, 0.45) + vec2(83.5, 31.2);
+              vec3 sMap4 = texture2D(uSnowNormalMap, fineCoord).xyz * 2.0 - 1.0;
+              fineXY = rotateUV(sMap4.xy, -0.45) * (0.28 * nearWeight);
+            }
+
+            vec2 snowPerturb = (
+              sMap1.xy * 0.45 +
+              rippleXY +
+              microXY +
+              fineXY
+            ) * uSnowNormalScale;
+
+            tangentSnowN = normalize(vec3(snowPerturb, 1.0));
+            worldSnowN = normalize(tbn * tangentSnowN);
+            g_powderCrust = clamp((rippleXY.x + microXY.y) * 0.5 + 0.5, 0.0, 1.0);
+          }
+          g_worldSnowN = worldSnowN;
+
+          vec3 litRockColor = vec3(0.3);
+
+          // =========================================================================
+          // 2b. GATED ROCK SAMPLING (Early-exit when snow covers this pixel!)
+          // =========================================================================
+          if (snowFactor < 0.98) {
+            vec3 colX = vec3(0.32), colY = vec3(0.32), colZ = vec3(0.32);
+            float roughX = 0.85, roughY = 0.85, roughZ = 0.85;
+            float aoX = 1.0, aoY = 1.0, aoZ = 1.0;
+            vec3 nX = vec3(0.0, 0.0, 1.0), nY = vec3(0.0, 0.0, 1.0), nZ = vec3(0.0, 0.0, 1.0);
+
+            if (blending.x > 0.03) sampleRockPlane(vCustomWorldPos.zy, distToCam, colX, roughX, aoX, nX);
+            if (blending.y > 0.03) sampleRockPlane(vCustomWorldPos.xz, distToCam, colY, roughY, aoY, nY);
+            if (blending.z > 0.03) sampleRockPlane(vCustomWorldPos.xy, distToCam, colZ, roughZ, aoZ, nZ);
+
+            g_roughX = roughX; g_roughY = roughY; g_roughZ = roughZ;
+            g_nX = nX; g_nY = nY; g_nZ = nZ;
+
+            vec3 rockAlbedo = colX * blending.x + colY * blending.y + colZ * blending.z;
+            float rockAO = aoX * blending.x + aoY * blending.y + aoZ * blending.z;
+
+            // Macro Geological Strata & Tone Modulation
+            float strata = sin(vCustomWorldPos.y * 0.075 + sin(vCustomWorldPos.x * 0.02) * 1.5) * 0.07;
+            float macroWave = sin(vCustomWorldPos.x * 0.012 + vCustomWorldPos.z * 0.009) * cos(vCustomWorldPos.y * 0.014);
+            vec3 macroTint = mix(vec3(0.93, 0.96, 1.04), vec3(1.06, 1.01, 0.94), macroWave * 0.5 + 0.5);
+            rockAlbedo = rockAlbedo * macroTint * (1.0 + strata);
+
+            litRockColor = rockAlbedo * mix(0.55, 1.0, rockAO);
+          } else {
+            g_roughX = 0.82; g_roughY = 0.82; g_roughZ = 0.82;
+            g_nX = vec3(0.0, 0.0, 1.0); g_nY = vec3(0.0, 0.0, 1.0); g_nZ = vec3(0.0, 0.0, 1.0);
+          }
+
+          // =========================================================================
+          // 3. DYNAMIC CHROMATIC SNOW SHADING (Atmospheric Sunlit vs Shadow Color)
+          // =========================================================================
+          vec3 dynamicSnowAlbedo = litRockColor;
+          if (snowFactor > 0.01) {
+            float microSun = clamp(dot(worldSnowN, uSunDirection) * 1.5, 0.0, 1.0);
+            float cavityAO = clamp(tangentSnowN.z * 0.65 + 0.35, 0.0, 1.0);
+            vec3 ambientSnowColor = mix(uShadowSnowColor, uCreviceSnowColor, (1.0 - cavityAO) * 0.60);
+            dynamicSnowAlbedo = mix(ambientSnowColor, uSunlitSnowColor, microSun * 0.85 + 0.15);
+            dynamicSnowAlbedo *= mix(0.75, 1.0, cavityAO);
+          }
+
+          terrainColor = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
         } else {
-          // Pure snow default placeholders
+          g_snowFactor = 0.0;
+          g_worldSnowN = vec3(0.0, 1.0, 0.0);
+          g_powderCrust = 0.5;
           g_roughX = 0.82; g_roughY = 0.82; g_roughZ = 0.82;
           g_nX = vec3(0.0, 0.0, 1.0); g_nY = vec3(0.0, 0.0, 1.0); g_nZ = vec3(0.0, 0.0, 1.0);
         }
 
         // =========================================================================
-        // 3. DYNAMIC CHROMATIC SNOW SHADING (Atmospheric Sunlit vs Shadow Color)
+        // 4. FROZEN LAKE GLACIAL ICE (Pure color gradient, zero net crack overlay)
         // =========================================================================
-        vec3 sunlitSnowColor = uSunlitSnowColor;
-        vec3 shadowSnowColor = uShadowSnowColor;
-        vec3 creviceSnowColor = uCreviceSnowColor;
-
-        // Micro-facet sun illumination from perturbed normal (creates crisp ridge lighting)
-        float microSun = clamp(dot(worldSnowN, uSunDirection) * 1.5, 0.0, 1.0);
-        // Sastrugi trough cavity ambient occlusion (cool blue shadows in snow furrows)
-        float cavityAO = clamp(tangentSnowN.z * 0.65 + 0.35, 0.0, 1.0);
-
-        vec3 ambientSnowColor = mix(shadowSnowColor, creviceSnowColor, (1.0 - cavityAO) * 0.60);
-        vec3 dynamicSnowAlbedo = mix(ambientSnowColor, sunlitSnowColor, microSun * 0.85 + 0.15);
-        dynamicSnowAlbedo *= mix(0.75, 1.0, cavityAO); // Organic depth in sastrugi hollows
-
-        vec3 terrainColor = mix(litRockColor, dynamicSnowAlbedo, snowFactor);
-
-        // =========================================================================
-        // 4. FROZEN LAKE GLACIAL ICE
-        // =========================================================================
-        float lakeFactor = vLakeData.x;
-        float lakeDepth = vLakeData.y;
-        g_lakeFactor = lakeFactor;
-        g_lakeDepth = lakeDepth;
 
         vec3 lakeIceColor = vec3(0.0);
         if (lakeFactor > 0.001) {
-          // Ultra-detailed organic multi-scale ice stress fracture system
-          vec2 baseIceCoord = vCustomWorldPos.xz * uLakeCrackScale;
-
-          // 1. Primary Structural Fissures (Crisp, organic, jagged tension fractures)
-          vec2 pMacro = warpIceCoord(baseIceCoord * 0.75);
-          float edge1 = getIceVoronoiEdge(pMacro);
-          float core1 = 1.0 - smoothstep(0.002, uLakeCrackWidth, edge1);
-          float frostGlow1 = (1.0 - smoothstep(0.005, uLakeCrackWidth * 2.5, edge1)) * 0.42;
-
-          // 2. Secondary High-Density Branching Hairlines (distance-gated past 130m)
-          float core2 = 0.0;
-          if (distToCam < 130.0) {
-            vec2 pMicro = warpIceCoord(rotateUV(baseIceCoord * 1.95, 0.63) + vec2(27.4, 19.8));
-            float edge2 = getIceVoronoiEdge(pMicro);
-            core2 = (1.0 - smoothstep(0.0015, uLakeCrackWidth * 0.65, edge2)) * 0.65 * (1.0 - smoothstep(90.0, 130.0, distToCam));
-          }
-
-          // 3. Subsurface 3D Parallax Fissures (distance-gated past 160m)
-          float coreDeep = 0.0;
-          if (distToCam < 160.0) {
-            vec3 viewDir = normalize(uCameraPosition - vCustomWorldPos);
-            vec2 deepShift = viewDir.xz * (0.35 * lakeDepth);
-            vec2 pDeep = warpIceCoord((baseIceCoord + deepShift) * 0.55 + vec2(14.7, 43.1));
-            float edgeDeep = getIceVoronoiEdge(pDeep);
-            coreDeep = (1.0 - smoothstep(0.003, uLakeCrackWidth * 1.35, edgeDeep)) * 0.50;
-          }
-
-          // 4. Ultra-Dense Micro-Crazing / Needle Frost Layer (near-field < 70m only)
-          float coreNano = 0.0;
-          if (distToCam < 70.0) {
-            vec2 pNano = warpIceCoord(rotateUV(baseIceCoord * 3.85, 1.32) + vec2(53.2, 87.1));
-            float edgeNano = getIceVoronoiEdge(pNano);
-            coreNano = (1.0 - smoothstep(0.001, uLakeCrackWidth * 0.45, edgeNano)) * 0.48 * (1.0 - smoothstep(45.0, 70.0, distToCam));
-          }
-
-          // 5. Frozen Air Bubble Inclusions & Crystalline Cavities
-          vec2 bubbleGrid = vCustomWorldPos.xz * (uLakeCrackScale * 3.2);
-          vec2 bId = floor(bubbleGrid);
-          vec2 bFract = fract(bubbleGrid);
-          vec2 bRnd = hash2(bId);
-          float bubbleDist = length(bFract - (vec2(0.5) + bRnd * 0.35));
-          float bubble = smoothstep(0.18, 0.05, bubbleDist) * smoothstep(0.0, 0.04, bubbleDist);
-          float bubbleGlint = smoothstep(0.06, 0.0, bubbleDist) * 0.60;
-          float totalBubbles = (bubble * 0.55 + bubbleGlint) * (0.30 + 0.70 * lakeDepth);
-
-          // 6. Organic Stress Mask (Natural variation in fracture intensity across the lake)
-          float stressNoise = sin(vCustomWorldPos.x * 0.08 + sin(vCustomWorldPos.z * 0.09) * 2.2) * cos(vCustomWorldPos.z * 0.07);
-          float breakMask1 = smoothstep(-0.5, 0.6, stressNoise);
-          float breakMask2 = smoothstep(-0.4, 0.5, -stressNoise);
-
-          // 7. Seamless Noise Texture Alpha Mask (Selectively overlays cracks only on natural portions of the lake with smooth fade-out)
-          vec2 noiseUV1 = vCustomWorldPos.xz * uLakeNoiseScale;
-          vec2 noiseUV2 = rotateUV(vCustomWorldPos.xz * (uLakeNoiseScale * 2.13), 0.785) + vec2(19.3, 47.1);
-
-          float nMacro = texture2D(uLakeNoiseMap, noiseUV1).r;
-          float nTurb = texture2D(uLakeNoiseMap, noiseUV2).g;
-          float nDetail = texture2D(uLakeNoiseMap, noiseUV2 * 1.7).b;
-
-          // Composite organic noise mask (centered around 0.55)
-          float lakeNoise = nMacro * 0.65 + nTurb * 0.25 + nDetail * 0.10;
-
-          // Smooth alpha transition: portions of lake (< uLakeNoiseThreshold) have ZERO cracks (glassy mirror ice)
-          // while portions (> uLakeNoiseThreshold) smoothly fade in organic fracture fields
-          float crackAlpha = smoothstep(uLakeNoiseThreshold, uLakeNoiseThreshold + 0.22, lakeNoise);
-
-          // Fine hairlines fade out gracefully near edges, leaving only deeper fractures dying out into glassy ice
-          float fineAlpha = smoothstep(uLakeNoiseThreshold + 0.08, uLakeNoiseThreshold + 0.30, lakeNoise);
-
-          float totalCracks = (core1 * 1.35 + frostGlow1) * (0.55 + 0.45 * breakMask1)
-                            + core2 * breakMask2 * fineAlpha
-                            + coreDeep * (0.40 + 0.60 * lakeDepth)
-                            + coreNano * fineAlpha * 0.85
-                            + totalBubbles * 0.45 * crackAlpha;
-
-          // Depth color blend
+          // Depth color gradient from bright shoreline teal to deep glacial blue-cyan center
           vec3 baseIce = mix(uLakeBrightColor, uLakeMidColor, smoothstep(0.15, 0.60, lakeDepth));
           baseIce = mix(baseIce, uLakeDeepColor, smoothstep(0.55, 0.95, lakeDepth));
 
-          // Internal crystalline fracture refraction modulated by noise alpha
-          vec3 crackLight = uLakeCrackColor * totalCracks * (0.50 + 0.50 * lakeDepth) * (uLakeCrackIntensity * 1.8);
-          baseIce += crackLight * crackAlpha;
-
-          // Subtle milky depth scattering along fissure fields
-          vec3 frostVeil = mix(uLakeBrightColor, vec3(0.95, 0.99, 1.0), 0.35) * frostGlow1 * 0.35 * crackAlpha;
-          baseIce += frostVeil;
-
-          // Cache crack radiance for direct specular & transmission pass
-          g_lakeCrackGlow = crackLight * crackAlpha;
-
           // Shoreline frost rim
           lakeIceColor = mix(uLakeFrostColor, baseIce, smoothstep(0.08, 0.40, lakeFactor));
-        } else {
-          g_lakeCrackGlow = vec3(0.0);
         }
         g_lakeIceColor = lakeIceColor;
 
@@ -759,15 +632,11 @@ export class TerrainMaterialFactory {
           normal = viewSnowN;
         }
 
-        // On lake ice: align normal to horizontal view-space vertical with multi-scale frozen flow ripples & micro-striations
+        // On lake ice: smooth horizontal ice normal with subtle frozen ripple
         if (g_lakeFactor > 0.05) {
-          vec2 rippleUV1 = vCustomWorldPos.xz * 0.85;
-          vec2 rippleUV2 = rotateUV(vCustomWorldPos.xz * 2.4, 0.95) + vec2(13.4, 27.8);
-          vec2 rippleUV3 = rotateUV(vCustomWorldPos.xz * 6.2, -0.65);
-          float rip1 = sin(rippleUV1.x * 2.5 + rippleUV1.y * 1.8);
-          float rip2 = cos(rippleUV2.x * 1.6 - rippleUV2.y * 2.4) * 0.60;
-          float rip3 = sin(rippleUV3.x * 3.2 + rippleUV3.y * 2.1) * 0.35;
-          vec2 icePerturb = vec2(rip1 + rip2, rip2 + rip3) * uLakeNormalRipples;
+          float ripX = sin(vCustomWorldPos.x * 2.1 + vCustomWorldPos.z * 1.5);
+          float ripZ = cos(vCustomWorldPos.x * 1.6 - vCustomWorldPos.z * 2.3);
+          vec2 icePerturb = vec2(ripX, ripZ) * uLakeNormalRipples;
           vec3 worldIceN = normalize(vec3(icePerturb.x, 1.0, icePerturb.y));
           vec3 viewIceN = normalize((viewMatrix * vec4(worldIceN, 0.0)).xyz);
           float iceNormBlend = smoothstep(0.12, 0.50, g_lakeFactor);
@@ -780,26 +649,26 @@ export class TerrainMaterialFactory {
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <opaque_fragment>',
         `
-        if (g_snowFactor > 0.01) {
+        if (g_snowFactor > 0.01 && g_lakeFactor < 0.42) {
           vec3 V = normalize(uCameraPosition - vCustomWorldPos);
           vec3 L = normalize(uSunDirection);
-          float viewDist = length(uCameraPosition - vCustomWorldPos);
           float sunLit = clamp(dot(g_worldSnowN, L) * 1.8, 0.0, 1.0);
 
           // Fast-gated sparkles with dynamic uniform scale, intensity, and distance
-          float distFade = smoothstep(uSparkleDistance, 6.0, viewDist);
+          float distFade = smoothstep(uSparkleDistance, 6.0, g_distToCam);
           float sparkle = 0.0;
           if (sunLit > 0.05 && distFade > 0.001) {
             sparkle = computeSnowSparkle(vCustomWorldPos, V, L, distFade) * sunLit;
           }
           vec3 sparkleColor = vec3(1.8, 1.75, 1.6) * (sparkle * uSparkleIntensity);
 
-          // SSS forward transmission
-          float forwardTrans = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) * pow(1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0), 2.0);
+          float oneMinusNdotV = 1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0);
+          float om2 = oneMinusNdotV * oneMinusNdotV;
+          float vDotNegL = clamp(dot(V, -L), 0.0, 1.0);
+          float forwardTrans = (vDotNegL * vDotNegL * vDotNegL) * om2;
           vec3 sssGlow = uSSSColor * forwardTrans * uSSSIntensity * sunLit;
 
-          // Glancing Fresnel Sheen (gated by illumination to keep shadows deep and rich)
-          float fresnel = pow(1.0 - clamp(dot(g_worldSnowN, V), 0.0, 1.0), 4.0);
+          float fresnel = om2 * om2;
           vec3 sheenGlow = uSheenColor * fresnel * (uSheenIntensity * (sunLit * 0.7 + 0.3));
 
           outgoingLight += (sparkleColor + sssGlow + sheenGlow) * g_snowFactor;
@@ -827,7 +696,7 @@ export class TerrainMaterialFactory {
           vec3 iceSSS = uLakeBrightColor * sssIce;
 
           float iceEffectBlend = smoothstep(0.12, 0.55, g_lakeFactor);
-          outgoingLight += (sunSpecGlint + emeraldSheen + iceSSS + g_lakeCrackGlow * 1.5) * iceEffectBlend;
+          outgoingLight += (sunSpecGlint + emeraldSheen + iceSSS) * iceEffectBlend;
         }
 
         #include <opaque_fragment>

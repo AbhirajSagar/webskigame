@@ -54,6 +54,7 @@ class FoliageTypePool {
     this.mesh.renderOrder = 100;
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
 
     // Zero-allocation pre-allocated TypedArrays for physics & slipstream simulation
     this._positions = new Float32Array(this.maxCount * 3);
@@ -129,6 +130,9 @@ class FoliageTypePool {
 
     if (this._lifetimes[idx] <= 0) {
       this.activeCount++;
+      if (this.mesh && !this.mesh.visible) {
+        this.mesh.visible = true;
+      }
     }
     this._lifetimes[idx] = lifetime;
     this._maxLifetimes[idx] = lifetime;
@@ -427,6 +431,10 @@ class FoliageTypePool {
 
     if (hasActiveParticles || this.mesh.instanceMatrix.needsUpdate) {
       this.mesh.instanceMatrix.needsUpdate = true;
+    }
+    if (!hasActiveParticles) {
+      this.activeCount = 0;
+      if (this.mesh.visible) this.mesh.visible = false;
     }
   }
 

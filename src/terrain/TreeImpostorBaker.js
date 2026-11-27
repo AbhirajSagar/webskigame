@@ -24,6 +24,9 @@ export class TreeImpostorBaker {
     this.sunIntensity = options.sunIntensity ?? 1.8;
     this.ambientColor = options.ambientColor || 0xffffff;
     this.ambientIntensity = options.ambientIntensity ?? 0.45;
+    this.hemiSkyColor = options.hemiSkyColor || 0x7b8ec8;
+    this.hemiGroundColor = options.hemiGroundColor || 0xd49aa8;
+    this.hemiIntensity = options.hemiIntensity ?? 0;
     this.groundBounceColor = options.groundBounceColor || 0xe8f0f8;
     this.groundBounceIntensity = options.groundBounceIntensity ?? 0.45;
     this.environment = options.environment || null;
@@ -95,19 +98,35 @@ export class TreeImpostorBaker {
       bakeScene.environment = env;
     }
 
-    // Main directional sunlight
-    const sun = new THREE.DirectionalLight(this.sunColor, this.sunIntensity);
-    sun.position.copy(this.sunPosition).normalize().multiplyScalar(50);
-    bakeScene.add(sun);
+    // Main directional sunlight (only when enabled)
+    let sun = null;
+    if (this.sunIntensity > 0) {
+      sun = new THREE.DirectionalLight(this.sunColor, this.sunIntensity);
+      sun.position.copy(this.sunPosition).normalize().multiplyScalar(50);
+      bakeScene.add(sun);
+    }
 
-    // Flat ambient skylight matching main scene
-    const amb = new THREE.AmbientLight(this.ambientColor, this.ambientIntensity);
-    bakeScene.add(amb);
+    // Flat ambient skylight (only when enabled)
+    let amb = null;
+    if (this.ambientIntensity > 0) {
+      amb = new THREE.AmbientLight(this.ambientColor, this.ambientIntensity);
+      bakeScene.add(amb);
+    }
 
-    // Snow ground bounce: pure white alpine snow (albedo ~0.85) reflects sunlight upward into branches
-    const groundBounce = new THREE.DirectionalLight(this.groundBounceColor, this.groundBounceIntensity);
-    groundBounce.position.set(0, -30, 0);
-    bakeScene.add(groundBounce);
+    // Hemisphere skylight (only when enabled)
+    let hemi = null;
+    if (this.hemiIntensity > 0) {
+      hemi = new THREE.HemisphereLight(this.hemiSkyColor, this.hemiGroundColor, this.hemiIntensity);
+      bakeScene.add(hemi);
+    }
+
+    // Snow ground bounce
+    let groundBounce = null;
+    if (this.groundBounceIntensity > 0) {
+      groundBounce = new THREE.DirectionalLight(this.groundBounceColor, this.groundBounceIntensity);
+      groundBounce.position.set(0, -30, 0);
+      bakeScene.add(groundBounce);
+    }
 
     const bakeMesh = new THREE.Mesh(model.geometry, model.materials);
     bakeScene.add(bakeMesh);
@@ -145,9 +164,10 @@ export class TreeImpostorBaker {
 
     // Clean up temporary bake objects
     bakeScene.remove(bakeMesh);
-    bakeScene.remove(sun);
-    bakeScene.remove(amb);
-    bakeScene.remove(groundBounce);
+    if (sun) bakeScene.remove(sun);
+    if (amb) bakeScene.remove(amb);
+    if (hemi) bakeScene.remove(hemi);
+    if (groundBounce) bakeScene.remove(groundBounce);
 
     // If impostor already exists, texture is refreshed in-place
     if (model.impostor) {

@@ -19,9 +19,11 @@ export class TerrainManager {
 
     this.chunkSize = options.chunkSize || 128;
     this.chunkSegments = options.chunkSegments || 20; // High-detail resolution for near chunks
-    this.renderDistance = options.renderDistance || 6; // Expanded view radius in chunks
+    this.renderDistance = options.renderDistance || 4; // View radius in chunks
     this.maxBuildsPerFrame = options.maxBuildsPerFrame || 1;
     this.treeShadowRange = options.treeShadowRange || 48; // Proximity range in meters for real-time tree shadows
+    this.maxViewDistance = options.maxViewDistance || 380; // Horizon fog cull distance in meters
+    this.maxViewDistSq = this.maxViewDistance * this.maxViewDistance;
 
     this.seed = options.seed !== undefined ? options.seed : 1337;
     this.terrainConfig = {
@@ -57,18 +59,23 @@ export class TerrainManager {
     // Zero-allocation camera frustum for hierarchical tree & chunk view culling
     this.cameraFrustum = new THREE.Frustum();
     this.projScreenMatrix = new THREE.Matrix4();
+    this._hasCameraFrustum = false;
+    this._scratchChunkBox = new THREE.Box3();
+    this._scratchBoxMin = new THREE.Vector3();
+    this._scratchBoxMax = new THREE.Vector3();
 
     this.treeGenerator.load().then(() => {
       // Build trees on any chunks loaded prior to model finish
       const px = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
       const pz = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
+      const activeFrustum = this._hasCameraFrustum ? this.cameraFrustum : null;
       for (const chunk of this.loadedChunks.values()) {
         if (!chunk.treeMesh3D && !chunk.treeMeshImpostor) {
           const dist = this._getChunkBoundaryDistance(chunk, px, pz);
-          chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, this.cameraFrustum);
+          chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, activeFrustum);
         }
       }
-      this._updateTreeLODs(px, pz, this.cameraFrustum);
+      this._updateTreeLODs(px, pz, activeFrustum);
     }).catch((err) => {
       console.warn('TerrainManager tree generation disabled due to load error:', err);
     });
@@ -234,7 +241,7 @@ export class TerrainManager {
   /**
    * Main per-frame update loop.
    * Checks player coordinates, dispatches chunk loading/unloading, updates terrain material uniforms,
-   * and builds queued chunks.
+   * and builds/remeshes queued chunks.
    * @param {THREE.Vector3} playerPosition
    * @param {number} [time] - Elapsed simulation time in seconds
    * @param {THREE.Camera|THREE.Vector3} [cameraOrPosition] - Current active camera (for frustum culling) or position
@@ -247,6 +254,8 @@ export class TerrainManager {
     if (cameraOrPosition) {
       if (cameraOrPosition.isCamera) {
         cameraPosition = cameraOrPosition.position;
+        // Ensure world matrix & matrixWorldInverse reflect current frame's camera position/rotation
+        cameraOrPosition.updateMatrixWorld();
         // Compute camera view frustum in place (0 runtime heap allocations)
         this.projScreenMatrix.multiplyMatrices(
           cameraOrPosition.projectionMatrix,
@@ -254,6 +263,7 @@ export class TerrainManager {
         );
         this.cameraFrustum.setFromProjectionMatrix(this.projScreenMatrix);
         cameraFrustum = this.cameraFrustum;
+        this._hasCameraFrustum = true;
       } else if (cameraOrPosition.isVector3) {
         cameraPosition = cameraOrPosition;
       }
@@ -296,11 +306,25 @@ export class TerrainManager {
    * @private
    */
   _updateTreeLODs(px, pz, cameraFrustum = null) {
-    const frustum = cameraFrustum || this.cameraFrustum;
+    const frustum = cameraFrustum || (this._hasCameraFrustum ? this.cameraFrustum : null);
     for (const chunk of this.loadedChunks.values()) {
       const distSq = this._getChunkBoundaryDistanceSq(chunk, px, pz);
-      chunk.updateTreeLOD(distSq, frustum, this.treeShadowRange, true);
+      chunk.updateTreeLOD(distSq, frustum, this.treeShadowRange, true, this.maxViewDistSq);
     }
+  }
+
+  /**
+   * Approximate frustum check for an unbuilt chunk grid cell (for prioritizing visible builds).
+   * @private
+   */
+  _isChunkCellVisible(cx, cz) {
+    if (!this._hasCameraFrustum) return true;
+    const minX = cx * this.chunkSize;
+    const minZ = cz * this.chunkSize;
+    this._scratchBoxMin.set(minX, -150, minZ);
+    this._scratchBoxMax.set(minX + this.chunkSize, 350, minZ + this.chunkSize);
+    this._scratchChunkBox.set(this._scratchBoxMin, this._scratchBoxMax);
+    return this.cameraFrustum.intersectsBox(this._scratchChunkBox);
   }
 
   /**
@@ -334,12 +358,13 @@ export class TerrainManager {
   }
 
   /**
-   * Distance-scaled terrain polygon resolution with harmonious steps and hysteresis deadbands:
-   * Prevents boundary thrashing/fluttering when the player moves along chunk boundaries:
-   * - Near (distSq <= 2, ~0-180m): Full resolution (20 segments, 400 quads)
-   * - Mid (distSq <= 6, ~180-310m): Medium detail (16 segments, 256 quads - ~36% reduction)
-   * - Far (distSq <= 12, ~310-440m): Low detail (12 segments, 144 quads - ~64% reduction)
-   * - Very Far (distSq > 12, > 440m up to 768m): Distant detail (8 segments, 64 quads - ~84% reduction)
+   * Distance-scaled terrain polygon resolution with integer-aligned hysteresis deadbands:
+   * Outer terrain chunks render at low resolution and upgrade back to original resolution
+   * only when the player approaches within close range:
+   * - Close (distSq <= 2, 3x3 chunks around player, ~0-180m): Original resolution (22 segments, 484 quads)
+   * - Mid (distSq <= 5, ~180-300m): Low-medium detail (10 segments, 100 quads - ~79% reduction)
+   * - Outer (distSq <= 13, ~300-460m): Low detail (6 segments, 36 quads - ~93% reduction)
+   * - Far Outer (distSq > 13, ~460-768m): Ultra-low detail (4 segments, 16 quads - ~97% reduction)
    * Combined with perimeter terrain skirts, ensures 100% sealed boundaries with zero cracks.
    * @param {number} [distSq]
    * @param {number|null} [currentSegments] - Current segment count to apply hysteresis
@@ -348,36 +373,36 @@ export class TerrainManager {
   getChunkSegmentsForDistSq(distSq = 0, currentSegments = null) {
     if (currentSegments === null || currentSegments === undefined) {
       if (distSq <= 2) return this.chunkSegments;
-      if (distSq <= 6) return 16;
-      if (distSq <= 12) return 12;
-      return 8;
+      if (distSq <= 5) return 10;
+      if (distSq <= 10) return 6;
+      return 4;
     }
 
-    // Hysteresis deadbands: require moving farther away before downgrading LOD
+    // Hysteresis deadbands aligned to integer grid distSq values (0,1,2, 4,5, 8,9,10, 13, 16...)
     if (currentSegments >= this.chunkSegments) {
-      // Currently at 20: stay at 20 until distSq >= 3
-      if (distSq < 3) return this.chunkSegments;
-      if (distSq <= 6) return 16;
-      if (distSq <= 12) return 12;
-      return 8;
-    } else if (currentSegments >= 16) {
-      // Currently at 16
-      if (distSq <= 2) return this.chunkSegments; // Upgrade to 20
-      if (distSq <= 7) return 16; // Stay at 16 (hysteresis band 6..7)
-      if (distSq <= 12) return 12;
-      return 8;
-    } else if (currentSegments >= 12) {
-      // Currently at 12
+      // Currently at full res: stay at full res until distSq >= 5 (keeps distSq=4 in hysteresis buffer)
+      if (distSq <= 4) return this.chunkSegments;
+      if (distSq <= 5) return 10;
+      if (distSq <= 10) return 6;
+      return 4;
+    } else if (currentSegments >= 10) {
+      // Currently at 10
+      if (distSq <= 2) return this.chunkSegments; // Upgrade to full res only when close
+      if (distSq <= 8) return 10; // Stay at 10 until distSq >= 9
+      if (distSq <= 10) return 6;
+      return 4;
+    } else if (currentSegments >= 6) {
+      // Currently at 6
       if (distSq <= 2) return this.chunkSegments;
-      if (distSq <= 5) return 16; // Upgrade to 16
-      if (distSq <= 13) return 12; // Stay at 12 (hysteresis band 12..13)
-      return 8;
+      if (distSq <= 5) return 10; // Upgrade to 10
+      if (distSq <= 13) return 6; // Stay at 6 until distSq >= 16
+      return 4;
     } else {
-      // Currently at 8
+      // Currently at 4
       if (distSq <= 2) return this.chunkSegments;
-      if (distSq <= 5) return 16;
-      if (distSq <= 11) return 12; // Upgrade to 12
-      return 8; // Stay at 8
+      if (distSq <= 5) return 10;
+      if (distSq <= 10) return 6; // Upgrade to 6
+      return 4; // Stay at 4
     }
   }
 
@@ -430,12 +455,27 @@ export class TerrainManager {
       return true;
     });
 
-    // Sort remeshQueue: prioritize upgrades (especially nearest player) before downgrades
+    // Sort remeshQueue: prioritize visible chunks & upgrades before off-screen downgrades
     this.remeshQueue.sort((a, b) => {
       if (a.isUpgrade !== b.isUpgrade) {
         return a.isUpgrade ? -1 : 1;
       }
+      const aVis = a.chunk.mesh ? a.chunk.mesh.visible : true;
+      const bVis = b.chunk.mesh ? b.chunk.mesh.visible : true;
+      if (aVis !== bVis) return aVis ? -1 : 1;
       return a.distSq - b.distSq;
+    });
+
+    // Drop any queued chunk builds that are no longer within active renderDistance (e.g., on landing)
+    const activeRangeLimit = (r + 1) * (r + 1);
+    this.buildQueue = this.buildQueue.filter((item) => {
+      const dx = item.cx - centerCX;
+      const dz = item.cz - centerCZ;
+      if (dx * dx + dz * dz > activeRangeLimit) {
+        this.queuedKeys.delete(this._chunkKey(item.cx, item.cz));
+        return false;
+      }
+      return true;
     });
 
     // 2. Identify missing chunks within render distance
@@ -468,11 +508,11 @@ export class TerrainManager {
               const playerX = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
               const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
               const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
+              const activeFrustum = this._hasCameraFrustum ? this.cameraFrustum : null;
               if (this.treeGenerator.isLoaded) {
-                chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, this.cameraFrustum);
-              } else {
-                chunk.updateTreeLOD(dist, this.cameraFrustum, this.treeShadowRange);
+                chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, activeFrustum);
               }
+              chunk.updateTreeLOD(dist * dist, activeFrustum, this.treeShadowRange, true, this.maxViewDistSq);
               this.loadedChunks.set(key, chunk);
             } else {
               needed.push({ cx, cz, distSq });
@@ -491,11 +531,16 @@ export class TerrainManager {
       this.buildQueue.push(item);
     }
 
-    // Sort queue so nearest chunks are always built first
+    // Sort queue so visible & nearest chunks are always built first
     this.buildQueue.sort((a, b) => {
-      const distA = Math.hypot(a.cx - centerCX, a.cz - centerCZ);
-      const distB = Math.hypot(b.cx - centerCX, b.cz - centerCZ);
-      return distA - distB;
+      const aVis = this._isChunkCellVisible(a.cx, a.cz);
+      const bVis = this._isChunkCellVisible(b.cx, b.cz);
+      if (aVis !== bVis) return aVis ? -1 : 1;
+      const dxA = a.cx - centerCX;
+      const dzA = a.cz - centerCZ;
+      const dxB = b.cx - centerCX;
+      const dzB = b.cz - centerCZ;
+      return (dxA * dxA + dzA * dzA) - (dxB * dxB + dzB * dzB);
     });
   }
 
@@ -538,11 +583,11 @@ export class TerrainManager {
           const playerX = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
           const playerZ = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
           const dist = this._getChunkBoundaryDistance(chunk, playerX, playerZ);
+          const activeFrustum = this._hasCameraFrustum ? this.cameraFrustum : null;
           if (this.treeGenerator.isLoaded) {
-            chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, this.cameraFrustum);
-          } else {
-            chunk.updateTreeLOD(dist, this.cameraFrustum, this.treeShadowRange);
+            chunk.buildTrees(this.scene, dist <= this.treeShadowRange, dist, activeFrustum);
           }
+          chunk.updateTreeLOD(dist * dist, activeFrustum, this.treeShadowRange, true, this.maxViewDistSq);
           this.loadedChunks.set(key, chunk);
           buildsThisFrame++;
         }
@@ -556,15 +601,18 @@ export class TerrainManager {
    * eliminating any frame drop or stutter when moving between distance tiers.
    * @private
    */
-  _processRemeshQueue(startTime = performance.now(), maxBudgetMs = 2.0) {
+  _processRemeshQueue(startTime = performance.now(), maxBudgetMs = 2.5) {
     if (this.remeshQueue.length === 0) return;
 
     let remeshedCount = 0;
-    const maxRemeshPerFrame = 1;
+    const maxRemeshPerFrame = this.remeshQueue[0]?.isUpgrade ? 3 : 2;
 
     while (this.remeshQueue.length > 0 && remeshedCount < maxRemeshPerFrame) {
       // Time budget guard: if earlier tasks (or a prior remesh) used up the budget, postpone to next frame
-      if ((performance.now() - startTime) > maxBudgetMs) {
+      if (remeshedCount > 0 && (performance.now() - startTime) > maxBudgetMs) {
+        break;
+      }
+      if (remeshedCount === 0 && (performance.now() - startTime) > maxBudgetMs && !this.remeshQueue[0].isUpgrade) {
         break;
       }
 
@@ -604,6 +652,25 @@ export class TerrainManager {
     const px = (this.lastPlayerChunkX ?? 0) * this.chunkSize;
     const pz = (this.lastPlayerChunkZ ?? 0) * this.chunkSize;
     this._updateTreeLODs(px, pz, this.cameraFrustum);
+  }
+
+  getChunkTelemetry() {
+    let total = 0;
+    let visibleChunks = 0;
+    let culledChunks = 0;
+
+    for (const chunk of this.loadedChunks.values()) {
+      total++;
+      if (chunk.mesh && chunk.mesh.visible) visibleChunks++;
+      else culledChunks++;
+    }
+
+    return {
+      totalChunks: total,
+      visibleChunks,
+      culledChunks,
+      cullPercentage: total > 0 ? Math.round((culledChunks / total) * 100) : 0,
+    };
   }
 
   getTreeTelemetry() {

@@ -21,6 +21,8 @@ export class SunLensFlare {
     this.maxIntensity = options.intensity ?? 0.58;
 
     this.intensity = 0.0;
+    this._occlusionTimer = 0.0;
+    this._cachedOccluded = false;
     this._initMesh();
   }
 
@@ -204,7 +206,13 @@ export class SunLensFlare {
           const angleNorm = Math.min(1.0, (sunDot - 0.12) / 0.45);
           const angleFade = angleNorm * Math.sqrt(angleNorm);
 
-          if (!this._isOccludedByTerrain(camera.position, terrainManager)) {
+          this._occlusionTimer -= dt || 0.016;
+          if (this._occlusionTimer <= 0) {
+            this._occlusionTimer = 0.05;
+            this._cachedOccluded = this._isOccludedByTerrain(camera.position, terrainManager);
+          }
+
+          if (!this._cachedOccluded) {
             targetIntensity = this.maxIntensity * screenFade * angleFade;
           }
 

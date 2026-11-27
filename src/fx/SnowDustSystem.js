@@ -206,6 +206,7 @@ export class SnowDustSystem {
     this.mesh.layers.disable(1);
     this.mesh.renderOrder = 45;
     this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
 
     if (this.scene) {
       this.scene.add(this.mesh);
@@ -222,6 +223,9 @@ export class SnowDustSystem {
 
     if (this._lifetimes[i] <= 0) {
       this.activeCount++;
+      if (this.mesh && !this.mesh.visible) {
+        this.mesh.visible = true;
+      }
     }
 
     this._px[i] = x;
@@ -399,6 +403,9 @@ export class SnowDustSystem {
 
     if (!anyAlive) {
       this.activeCount = 0;
+      if (this.mesh && this.mesh.visible) {
+        this.mesh.visible = false;
+      }
     }
   }
 

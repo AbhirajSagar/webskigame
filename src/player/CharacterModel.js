@@ -109,6 +109,8 @@ export class CharacterModel {
     this.sprayMesh.layers.set(0); // Renders with world (Camera 2)
     this.sprayMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.sprayMesh.frustumCulled = false;
+    this.sprayMesh.visible = false;
+    this._sprayActive = false;
 
     for (let i = 0; i < MAX_SPRAY_PARTICLES; i++) {
       this._sprayDummy.position.set(0, -9999, 0);
@@ -551,7 +553,9 @@ export class CharacterModel {
       _scratchRight.applyAxisAngle(_scratchForward, this.currentBankAngle);
     }
 
-    const altitude = player.getAltitude ? player.getAltitude() : (player.altitude || 0);
+    const altitude = (player.isGrounded && player._frameGroundY !== null)
+      ? Math.max(0, player.position.y - player._frameGroundY)
+      : (player.getAltitude ? player.getAltitude() : (player.altitude || 0));
 
     // 5. Snowboard slide alignment (zero brake slide since brake control was removed)
     this.currentBrakeAngle = 0.0;
@@ -635,7 +639,12 @@ export class CharacterModel {
     const isCarving = Math.abs(this.currentBankAngle) > 0.08;
     const isBoosting = this.currentState === 'boost';
 
-    if (isGrounded && speed > 2.0 && player.isPlaying) {
+    const isSpawning = isGrounded && speed > 2.0 && player.isPlaying;
+    if (!isSpawning && !this._sprayActive) {
+      return;
+    }
+
+    if (isSpawning) {
       const highSpeedRatio = Math.min(1.0, speed / 50.0);
       const spawnCount = isCarving
         ? (speed > 35 ? 6 : 4)
@@ -687,14 +696,20 @@ export class CharacterModel {
         this._sprayDummy.updateMatrix();
         this.sprayMesh.setMatrixAt(i, this._sprayDummy.matrix);
         needsUpdate = true;
-      } else {
+      } else if (this._sprayMaxLifetimes[i] > 0) {
+        this._sprayMaxLifetimes[i] = 0;
         this._sprayDummy.position.set(0, -9999, 0);
         this._sprayDummy.scale.set(0, 0, 0);
         this._sprayDummy.updateMatrix();
         this.sprayMesh.setMatrixAt(i, this._sprayDummy.matrix);
+        needsUpdate = true;
       }
     }
 
+    this._sprayActive = needsUpdate;
+    if (this.sprayMesh.visible !== needsUpdate) {
+      this.sprayMesh.visible = needsUpdate;
+    }
     if (needsUpdate) {
       this.sprayMesh.instanceMatrix.needsUpdate = true;
     }
@@ -734,6 +749,8 @@ export class CharacterModel {
       this._sprayDummy.updateMatrix();
       this.sprayMesh.setMatrixAt(i, this._sprayDummy.matrix);
     }
+    this._sprayActive = false;
+    this.sprayMesh.visible = false;
     this.sprayMesh.instanceMatrix.needsUpdate = true;
   }
 
