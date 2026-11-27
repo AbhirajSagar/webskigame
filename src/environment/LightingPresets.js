@@ -59,8 +59,8 @@ export const GOLDEN_HOUR_LIGHTING_CONFIG = {
     density: 0.0042,
     enabled: true,
     color: '#f5ab9e',
-    near: 125,
-    far: 370,
+    near: 80,
+    far: 235,
   },
   snow: {
     sunlitColor: '#ffdbf0',
@@ -157,8 +157,8 @@ export const ALPINE_DAY_LIGHTING_CONFIG = {
   fog: {
     enabled: true,
     color: '#c4ddf2',
-    near: 110,
-    far: 360,
+    near: 75,
+    far: 230,
   },
   snow: {
     sunlitColor: '#f4f8ff',

@@ -15,6 +15,7 @@ import {
   LIGHTING_PRESETS,
 } from './environment/LightingPresets.js';
 import { AtmosphereEditorUI } from './ui/AtmosphereEditorUI.js';
+import { MusicLyricsPlayer } from './audio/MusicLyricsPlayer.js';
 import './style.css';
 
 // --- Loading Overlay Manager ---
@@ -108,12 +109,13 @@ renderer.shadowMap.enabled = false;
 
 // --- Modular Procedural Terrain System with Mountains and Rock Texturing ---
 const terrainManager = new TerrainManager(scene, {
-  chunkSize: 128,        // Expanded chunk size for vast alpine terrain scale (was 96)
+  chunkSize: 128,        // Expanded chunk size for alpine terrain scale
   chunkSegments: 18,     // Smooth high-fidelity close resolution with lower vertex overhead
-  renderDistance: 4,     // 512m chunk radius (~49 chunks) for high-FPS gameplay matching horizon fog
+  renderDistance: 2,     // 256m chunk radius (~13 chunks) for high-FPS gameplay
+  maxViewDistance: 235,  // Cull distant trees matching reduced render distance
   treeGridStep: 12.5,    // Lush alpine conifer spacing with reduced overdraw
   treeDensity: 0.68,     // Lush alpine forest density
-  treeShadowRange: 36,   // Proximity shadow range for real-time conifer shadows
+  treeShadowRange: 28,   // Proximity shadow range for real-time conifer shadows
   maxBuildsPerFrame: 1,  // Smooth chunk streaming
   seed: Math.random() * 10000, // Randomized terrain generation seed
   treeModel: '/models/Pine_4m.glb', // Populate world with authentic Pine 4m conifer trees
@@ -221,8 +223,15 @@ const atmosphereEditor = new AtmosphereEditorUI({
   },
 });
 
+// --- Soundtrack & .lrc Synchronized Lyrics Player ---
+const musicPlayer = new MusicLyricsPlayer();
+loadingOverlay.attachMusicPlayer(musicPlayer);
+
 // Launch downhill ski run with the user's chosen lighting preset
-loadingOverlay.onPlay(async (presetId, { openEditor = false } = {}) => {
+loadingOverlay.onPlay(async (presetId, { openEditor = false, withMusic = false } = {}) => {
+  if (withMusic && musicPlayer.hasAudio() && !musicPlayer.pendingStart && !musicPlayer.hasStarted) {
+    musicPlayer.armForLanding();
+  }
   await lightingManager.applyPreset(presetId);
   atmosphereEditor.syncFromManager();
   player.start();
@@ -247,6 +256,8 @@ window.__GAME = {
   speedEffects,
   lightingManager,
   atmosphereEditor,
+  musicPlayer,
+  loadingOverlay,
   LIGHTING_PRESETS,
   getAllLightingPresets,
   setLightingPreset: (id) => lightingManager.applyPreset(id),
@@ -270,6 +281,11 @@ function animate() {
   // 1. Update player physics, cameras, rider animations, and snow spray
   player.update(delta);
 
+  // Start armed music on the exact moment the player lands on the snow
+  if (player.isPlaying && player.isGrounded && musicPlayer.pendingStart) {
+    musicPlayer.startOnLanding();
+  }
+
   // 2. Update visual and audio speed effects (peripheral wind streaks, speed vignette, procedural audio)
   speedEffects.update(delta, player.speed, player.velocity, player.isGrounded, elapsedTime);
 
@@ -285,6 +301,7 @@ function animate() {
   }
   snowfallSystem.update(elapsedTime, worldCamera.position);
   sunLensFlare.update(delta, worldCamera, terrainManager);
+  musicPlayer.update();
 
   // 5. Two-Camera Composite Render:
   // Pass 1: Render world (terrain, trees, shadows, environment) with worldCamera

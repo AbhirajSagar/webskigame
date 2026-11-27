@@ -1,5 +1,6 @@
 import { requestPointerLockSafe } from '../utils/pointerLock.js';
 import { DEFAULT_PRESET_ID, getAllLightingPresets } from '../environment/LightingPresets.js';
+import { MUSIC_TRACKS } from '../audio/MusicTracks.js';
 
 /**
  * Triggers browser fullscreen mode with cross-browser compatibility.
@@ -28,7 +29,8 @@ export function triggerBrowserFullscreen(element = document.documentElement) {
 
 /**
  * LoadingOverlay
- * Displays loading progress and transitions to the atmosphere preset selector.
+ * Displays loading progress, atmosphere preset selection, and a post-selection
+ * music prompt dialog listing tracks defined in src/audio/MusicTracks.js.
  */
 export class LoadingOverlay {
   constructor() {
@@ -41,12 +43,39 @@ export class LoadingOverlay {
     this.isReady = false;
     this.isPlaying = false;
     this.selectedPreset = DEFAULT_PRESET_ID;
+    this._pendingPresetId = DEFAULT_PRESET_ID;
+    this._pendingOpenEditor = false;
+    this._selectedTrackId = null;
+    this._tracksProvider = () => MUSIC_TRACKS;
+
     this._playCallbacks = [];
     this._createCallbacks = [];
     this._presetButtons = [];
+    this._musicPlayer = null;
 
     this.renderPresets();
     this._initCreateButton();
+    this._initMusicDialog();
+  }
+
+  attachMusicPlayer(musicPlayer) {
+    this._musicPlayer = musicPlayer || null;
+  }
+
+  /**
+   * Optional override for available track list (useful for testing or dynamic injection).
+   * @param {() => Array} provider
+   */
+  setTracksProvider(provider) {
+    if (typeof provider === 'function') {
+      this._tracksProvider = provider;
+      this._renderTrackList();
+    }
+  }
+
+  _getAvailableTracks() {
+    const list = this._tracksProvider?.();
+    return Array.isArray(list) ? list : [];
   }
 
   _initCreateButton() {
@@ -62,13 +91,231 @@ export class LoadingOverlay {
     createBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this._launchSelection(DEFAULT_PRESET_ID, { openEditor: true });
+      this._openMusicDialog(DEFAULT_PRESET_ID, { openEditor: true });
     });
 
     header.appendChild(createBtn);
   }
 
-  _launchSelection(presetId, { openEditor = false } = {}) {
+  _initMusicDialog() {
+    if (!this.overlay || document.getElementById('music-prompt-dialog')) return;
+
+    this.musicDialog = document.createElement('div');
+    this.musicDialog.id = 'music-prompt-dialog';
+    this.musicDialog.style.display = 'none';
+
+    const header = document.createElement('div');
+    header.className = 'mpd-header';
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'mpd-title-wrap';
+    this._dialogPresetLabel = document.createElement('span');
+    this._dialogPresetLabel.className = 'mpd-eyebrow';
+    const title = document.createElement('h2');
+    title.className = 'mpd-title';
+    title.textContent = 'Play with music?';
+    titleWrap.append(this._dialogPresetLabel, title);
+
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'ae-icon-btn';
+    backBtn.title = 'Back to atmospheres';
+    backBtn.textContent = '×';
+    backBtn.addEventListener('click', () => this._closeMusicDialog());
+
+    header.append(titleWrap, backBtn);
+
+    // Choice row: Yes / No
+    this._choiceRow = document.createElement('div');
+    this._choiceRow.className = 'mpd-choice-row';
+
+    const noBtn = document.createElement('button');
+    noBtn.type = 'button';
+    noBtn.id = 'music-prompt-no';
+    noBtn.className = 'mpd-btn mpd-btn-secondary';
+    noBtn.textContent = 'No, play without music';
+    noBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this._musicPlayer) {
+        this._musicPlayer.clearAll();
+      }
+      this._launchSelection(this._pendingPresetId, {
+        openEditor: this._pendingOpenEditor,
+        withMusic: false,
+      });
+    });
+
+    const yesBtn = document.createElement('button');
+    yesBtn.type = 'button';
+    yesBtn.id = 'music-prompt-yes';
+    yesBtn.className = 'mpd-btn mpd-btn-primary';
+    yesBtn.textContent = 'Yes, choose a track';
+    yesBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this._showTrackPicker(true);
+    });
+
+    this._choiceRow.append(yesBtn, noBtn);
+
+    // Track picker list shown when user says Yes
+    this._fieldsWrap = document.createElement('div');
+    this._fieldsWrap.id = 'music-prompt-fields';
+    this._fieldsWrap.className = 'mpd-fields';
+    this._fieldsWrap.style.display = 'none';
+
+    const listLabel = document.createElement('div');
+    listLabel.className = 'mpd-field-label';
+    listLabel.textContent = 'Available tracks';
+
+    this._trackListEl = document.createElement('div');
+    this._trackListEl.id = 'music-prompt-track-list';
+    this._trackListEl.className = 'mpd-track-list';
+
+    this._dialogStatus = document.createElement('div');
+    this._dialogStatus.className = 'mpd-status';
+
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'mpd-actions';
+
+    this._startBtn = document.createElement('button');
+    this._startBtn.type = 'button';
+    this._startBtn.id = 'music-prompt-start';
+    this._startBtn.className = 'mpd-btn mpd-btn-primary';
+    this._startBtn.textContent = 'Drop In';
+    this._startBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const tracks = this._getAvailableTracks();
+      const selected = tracks.find((t, idx) => (t.id || String(idx)) === this._selectedTrackId);
+      if (!selected) {
+        this._dialogStatus.textContent = 'Select a track above or go Back to play without music.';
+        this._dialogStatus.className = 'mpd-status is-err';
+        return;
+      }
+
+      if (this._musicPlayer) {
+        const loadPromise = this._musicPlayer.loadTrack(selected);
+        // Arm synchronously inside click gesture right after audio.src is assigned
+        this._musicPlayer.armForLanding();
+        await loadPromise;
+      }
+
+      this._launchSelection(this._pendingPresetId, {
+        openEditor: this._pendingOpenEditor,
+        withMusic: true,
+      });
+    });
+
+    const backStepBtn = document.createElement('button');
+    backStepBtn.type = 'button';
+    backStepBtn.className = 'mpd-btn mpd-btn-secondary';
+    backStepBtn.textContent = 'Back';
+    backStepBtn.addEventListener('click', () => this._showTrackPicker(false));
+
+    actionsRow.append(this._startBtn, backStepBtn);
+    this._fieldsWrap.append(listLabel, this._trackListEl, this._dialogStatus, actionsRow);
+
+    this.musicDialog.append(header, this._choiceRow, this._fieldsWrap);
+    this.overlay.appendChild(this.musicDialog);
+    this._renderTrackList();
+  }
+
+  _renderTrackList() {
+    if (!this._trackListEl) return;
+    this._trackListEl.innerHTML = '';
+
+    const tracks = this._getAvailableTracks();
+    if (tracks.length === 0) {
+      this._selectedTrackId = null;
+      const empty = document.createElement('div');
+      empty.className = 'mpd-empty-tracks';
+      empty.innerHTML = 'No tracks configured yet. Add audio + <code>.lrc</code> files in <code>public/music/</code> and register them in <code>src/audio/MusicTracks.js</code>.';
+      this._trackListEl.appendChild(empty);
+      if (this._startBtn) this._startBtn.disabled = true;
+      return;
+    }
+
+    if (this._startBtn) this._startBtn.disabled = false;
+    if (!tracks.some((t, idx) => (t.id || String(idx)) === this._selectedTrackId)) {
+      this._selectedTrackId = tracks[0].id || '0';
+    }
+
+    tracks.forEach((track, idx) => {
+      const trackId = track.id || String(idx);
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'mpd-track-item';
+      item.dataset.trackId = trackId;
+      item.classList.toggle('is-selected', trackId === this._selectedTrackId);
+
+      const meta = document.createElement('div');
+      meta.className = 'mpd-track-meta';
+
+      const name = document.createElement('span');
+      name.className = 'mpd-track-title';
+      name.textContent = track.title || trackId;
+      meta.appendChild(name);
+
+      if (track.artist) {
+        const artist = document.createElement('span');
+        artist.className = 'mpd-track-artist';
+        artist.textContent = track.artist;
+        meta.appendChild(artist);
+      }
+
+      const tag = document.createElement('span');
+      tag.className = 'mpd-track-tag';
+      tag.textContent = (track.lrc || track.lrcUrl) ? 'LRC' : 'AUDIO';
+
+      item.append(meta, tag);
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._selectedTrackId = trackId;
+        this._trackListEl.querySelectorAll('.mpd-track-item').forEach((el) => {
+          el.classList.toggle('is-selected', el.dataset.trackId === trackId);
+        });
+        this._dialogStatus.textContent = '';
+        this._dialogStatus.className = 'mpd-status';
+      });
+
+      this._trackListEl.appendChild(item);
+    });
+  }
+
+  _showTrackPicker(show) {
+    this._choiceRow.style.display = show ? 'none' : 'flex';
+    this._fieldsWrap.style.display = show ? 'flex' : 'none';
+    if (show) {
+      this._renderTrackList();
+      this._dialogStatus.textContent = '';
+      this._dialogStatus.className = 'mpd-status';
+    }
+  }
+
+  _openMusicDialog(presetId, { openEditor = false } = {}) {
+    if (this.isPlaying) return;
+    this._pendingPresetId = presetId;
+    this._pendingOpenEditor = openEditor;
+
+    const cfg = getAllLightingPresets()[presetId];
+    if (this._dialogPresetLabel) {
+      this._dialogPresetLabel.textContent = cfg?.label || presetId;
+    }
+
+    this._showTrackPicker(false);
+    if (this.presetSelector) this.presetSelector.style.display = 'none';
+    if (this.musicDialog) this.musicDialog.style.display = 'flex';
+  }
+
+  _closeMusicDialog() {
+    if (this.musicDialog) this.musicDialog.style.display = 'none';
+    if (this.presetSelector) this.presetSelector.style.display = 'flex';
+  }
+
+  _launchSelection(presetId, { openEditor = false, withMusic = false } = {}) {
     if (this.isPlaying) return;
     this.isPlaying = true;
     this.selectedPreset = presetId;
@@ -87,7 +334,7 @@ export class LoadingOverlay {
 
     for (const cb of this._playCallbacks) {
       try {
-        cb(presetId, { openEditor });
+        cb(presetId, { openEditor, withMusic });
       } catch (err) {
         console.error('Error in onPlay callback:', err);
       }
@@ -188,7 +435,7 @@ export class LoadingOverlay {
           if (typeof e.preventDefault === 'function') e.preventDefault();
           if (typeof e.stopPropagation === 'function') e.stopPropagation();
         }
-        this._launchSelection(presetId);
+        this._openMusicDialog(presetId);
       };
 
       btn.addEventListener('click', handleSelect);
@@ -243,7 +490,7 @@ export class LoadingOverlay {
   }
 
   /**
-   * Registers a callback triggered when a preset is launched
+   * Registers a callback triggered when Play starts
    * @param {Function} callback
    */
   onPlay(callback) {

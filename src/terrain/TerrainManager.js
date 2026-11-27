@@ -19,10 +19,10 @@ export class TerrainManager {
 
     this.chunkSize = options.chunkSize || 128;
     this.chunkSegments = options.chunkSegments || 20; // High-detail resolution for near chunks
-    this.renderDistance = options.renderDistance || 4; // View radius in chunks
+    this.renderDistance = options.renderDistance || 2; // View radius in chunks
     this.maxBuildsPerFrame = options.maxBuildsPerFrame || 1;
-    this.treeShadowRange = options.treeShadowRange || 48; // Proximity range in meters for real-time tree shadows
-    this.maxViewDistance = options.maxViewDistance || 380; // Horizon fog cull distance in meters
+    this.treeShadowRange = options.treeShadowRange || 28; // Proximity range in meters for real-time tree shadows
+    this.maxViewDistance = options.maxViewDistance || 235; // Horizon fog cull distance in meters
     this.maxViewDistSq = this.maxViewDistance * this.maxViewDistance;
 
     this.seed = options.seed !== undefined ? options.seed : 1337;
@@ -409,7 +409,7 @@ export class TerrainManager {
   _updateGrid(centerCX, centerCZ, isInitial = false) {
     const r = this.renderDistance;
     const rSq = r * r;
-    const unloadDistSq = (r + 1.2) * (r + 1.2);
+    const unloadDistSq = (r + 0.65) * (r + 0.65);
 
     // 1. Identify chunks to unload (hysteresis buffer prevents thrashing at borders)
     for (const [key, chunk] of this.loadedChunks.entries()) {
